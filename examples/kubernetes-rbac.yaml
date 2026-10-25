@@ -24,6 +24,9 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list"]
   - apiGroups: [""]
+    resources: ["events"]        # job_timeline: operator and pod events
+    verbs: ["get", "list"]
+  - apiGroups: [""]
     resources: ["services/proxy"]
     verbs: ["get"]
 ---

@@ -277,6 +277,12 @@ class KubeClient:
         data = await self.get(f"/api/v1/namespaces/{namespace}/pods", labelSelector=selector)
         return data.get("items", [])
 
+    async def events(self, namespace: str, field_selector: str) -> list[dict[str, Any]]:
+        data = await self.get(
+            f"/api/v1/namespaces/{namespace}/events", fieldSelector=field_selector, limit=500
+        )
+        return data.get("items", [])
+
     def rest_url(self, namespace: str, name: str, access: str) -> str:
         """Where the operator-created `<name>-rest` service of a deployment can be reached."""
         if access == "service":

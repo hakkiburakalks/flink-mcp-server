@@ -78,6 +78,22 @@ async def test_healthy_deployment_is_reachable_through_the_api_server_proxy(monk
     assert {p["component"] for p in health["pods"]} >= {"jobmanager"}
 
 
+async def test_timeline_combines_flink_and_operator_events(monkeypatch):
+    use_account(monkeypatch, "reader")
+
+    async def job_with_operator_events():
+        jobs = await server.list_jobs(cluster="flink/orders")
+        out = await server.job_timeline(jobs[0]["id"], cluster="flink/orders")
+        ok = all(out["sources"][s]["status"] == "ok" for s in ("job_states", "kubernetes"))
+        has_both = {e["source"] for e in out["events"]} >= {"flink", "kubernetes"}
+        return out if ok and has_both else None
+
+    out = await eventually(job_with_operator_events)
+    times = [e["timestamp_ms"] for e in out["events"]]
+    assert times == sorted(times)
+    assert any("kubernetes:" in note for note in out["coverage"])
+
+
 async def test_broken_deployment_is_diagnosed_from_the_kubernetes_side(monkeypatch):
     use_account(monkeypatch, "reader")
 

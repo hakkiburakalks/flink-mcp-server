@@ -20,6 +20,7 @@ Tool output is summarized for LLMs rather than returning raw REST JSON.
 | `taskmanagers` | Slots and resources per TaskManager |
 | `job_config` | Job execution config |
 | `list_log_files` / `get_logs` | JobManager or TaskManager logs: tail, filter by level (stack traces stay with their error) or text, plus warning/error counts for the whole file |
+| `job_timeline` | One time-ordered list of what is recorded about a job: state entries, failures, failed checkpoints, savepoints, restores and (on Kubernetes) operator/pod events. States each source's coverage and any source it could not read |
 | `list_savepoints` | Savepoints, latest completed checkpoint and what the job was restored from, with storage paths |
 | `job_metrics` | Job metric values, or the catalogue of available metric ids (filterable) |
 | `list_jars` | Uploaded JARs and their entry classes |
@@ -82,7 +83,7 @@ kubernetes:
   **`access: service`** uses in-cluster DNS (`http://<name>-rest.<ns>.svc:8081`); use it when
   the server itself runs in the cluster.
 - **Permissions**: read-only. [`examples/kubernetes-rbac.yaml`](https://github.com/hakkiburakalks/flink-mcp-server/blob/main/examples/kubernetes-rbac.yaml)
-  grants `get`/`list` on `flinkdeployments` and `pods` and `get` on `services/proxy`, nothing else.
+  grants `get`/`list` on `flinkdeployments`, `pods` and `events` (the last only for `job_timeline`; without it that source is reported as unavailable and the rest still works) and `get` on `services/proxy`, nothing else.
 
 ## Install and run
 
@@ -182,4 +183,4 @@ uv run pytest -m integration       # needs the local cluster (Docker)
 ## Roadmap
 
 Done: V2 multi-cluster, token/TLS options, Streamable HTTP with bearer auth, Kubernetes discovery.
-Next: V3 diagnostics (logs, savepoints: done; job timeline, Prometheus), V4 approval-gated operations and SQL Gateway.
+Next: V3 diagnostics (logs, savepoints, job timeline: done; Prometheus), V4 approval-gated operations and SQL Gateway.

@@ -212,6 +212,14 @@ class ClusterRegistry:
             raise ConfigError(f"Unknown cluster '{name}'. Available: {', '.join(self.clusters) or 'none'}{hint}")
         return name
 
+    def kube_target(self, name: str | None = None) -> tuple[str, str] | None:
+        """(namespace, deployment) when the cluster was discovered from Kubernetes, else None."""
+        cfg = self.clusters[self._resolve(name)]
+        if not cfg.via_kube:
+            return None
+        namespace, _, deployment = cfg.name.partition("/")
+        return namespace, deployment
+
     async def aclient(self, name: str | None = None) -> FlinkClient:
         await self.refresh()
         return self.client(name)

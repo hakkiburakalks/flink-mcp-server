@@ -7,9 +7,10 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from . import __version__, kube_summaries, summaries
-from .client import FlinkClient, log_file_path
-from .config import ClusterRegistry, load_clusters, load_kube_settings
+from . import __version__, kube_summaries, summaries, timeline
+from .client import FlinkClient, FlinkConnectionError, FlinkHTTPError, log_file_path
+from .config import ClusterRegistry, ConfigError, load_clusters, load_kube_settings
+from .kube import KubeError
 from .logs import LogTail
 from .transport import serve_http
 
@@ -160,6 +161,67 @@ async def list_savepoints(job_id: str, cluster: str | None = None) -> dict[str, 
     from, each with its storage path. Use it to find where a job can be restarted from; paths are
     only present for savepoints and for checkpoints retained on cancellation."""
     return summaries.summarize_savepoints(await (await get_client(cluster)).job_checkpoints(job_id))
+
+
+@mcp.tool()
+async def job_timeline(
+    job_id: str, limit: int = 50, cluster: str | None = None
+) -> dict[str, Any]:
+    """What happened to a job and when, oldest first: the latest time it entered each state,
+    recorded failures (exception history), failed checkpoints, savepoints and restores, and,
+    for Kubernetes clusters, operator and pod events. Flink keeps no event log, so the
+    result lists its `coverage` limits and any source that could not be read; a restart
+    is shown only when a recorded failure or restore proves it. Keeps the most recent `limit` events."""
+    registry = get_registry()
+    client = await get_client(cluster)
+    target = registry.kube_target(cluster)
+    fetches = {
+        "job_states": client.job(job_id),
+        "exceptions": client.job_exceptions(job_id),
+        "checkpoints": client.job_checkpoints(job_id),
+    }
+    if target:
+        fetches["kubernetes"] = _kube_timeline_source(registry, *target)
+    results = await asyncio.gather(*fetches.values(), return_exceptions=True)
+    raw = dict(zip(fetches, results))
+    parts: dict[str, Any] = {}
+    builders = {
+        "job_states": timeline.job_state_events,
+        "exceptions": timeline.exception_events,
+        "checkpoints": timeline.checkpoint_events,
+    }
+    for name, builder in builders.items():
+        parts[name] = _source(raw[name], builder)
+    if target:
+        parts["kubernetes"] = _source(raw["kubernetes"], lambda r: timeline.kube_events(*r))
+    else:
+        parts["kubernetes"] = "not a Kubernetes-discovered cluster"
+    return timeline.merge(parts, max(1, min(limit, 200)))
+
+
+_SOURCE_ERRORS = (FlinkConnectionError, FlinkHTTPError, KubeError, ConfigError)
+
+
+def _source(result: Any, build: Any) -> Any:
+    """Turn a fetch result into timeline events; expected failures become a per-source error."""
+    if isinstance(result, _SOURCE_ERRORS):
+        return result
+    if isinstance(result, BaseException):
+        raise result
+    return build(result)
+
+
+async def _kube_timeline_source(
+    registry: ClusterRegistry, namespace: str, name: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[str]]:
+    kube = registry.kube_client()
+    deployment, pods = await asyncio.gather(
+        kube.events(namespace, f"involvedObject.kind=FlinkDeployment,involvedObject.name={name}"),
+        kube.pods(namespace, f"app={name}"),
+    )
+    pod_names = {p["metadata"]["name"] for p in pods}
+    pod_events = await kube.events(namespace, "involvedObject.kind=Pod") if pod_names else []
+    return deployment, pod_events, pod_names
 
 
 @mcp.tool()
