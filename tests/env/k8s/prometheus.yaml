@@ -1,0 +1,73 @@
+# Prometheus for the Kubernetes tests: scrapes the Flink pods of the "orders" deployment
+# (reporter port 9249) every 5 seconds and labels the series with namespace, deployment,
+# component and pod, the labels `discovered_selector` maps a Kubernetes cluster to.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: prometheus, namespace: flink}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: prometheus-pods, namespace: flink}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: prometheus-pods, namespace: flink}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: prometheus-pods}
+subjects:
+  - {kind: ServiceAccount, name: prometheus, namespace: flink}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: prometheus-config, namespace: flink}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+    scrape_configs:
+      - job_name: flink
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: {names: [flink]}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: orders
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            replacement: "$1:9249"
+            target_label: __address__
+          - {source_labels: [__meta_kubernetes_namespace], target_label: namespace}
+          - {source_labels: [__meta_kubernetes_pod_label_app], target_label: deployment}
+          - {source_labels: [__meta_kubernetes_pod_label_component], target_label: component}
+          - {source_labels: [__meta_kubernetes_pod_name], target_label: pod}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: prometheus, namespace: flink}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: prometheus}}
+  template:
+    metadata: {labels: {app: prometheus}}
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.55.1
+          args: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2h"]
+          ports: [{containerPort: 9090}]
+          readinessProbe: {httpGet: {path: /-/ready, port: 9090}}
+          volumeMounts: [{name: config, mountPath: /etc/prometheus}]
+      volumes:
+        - name: config
+          configMap: {name: prometheus-config}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: prometheus, namespace: flink}
+spec:
+  selector: {app: prometheus}
+  ports: [{port: 9090, targetPort: 9090}]

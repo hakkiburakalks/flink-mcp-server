@@ -6,6 +6,7 @@
 #
 #   bash tests/env/k8s/setup.sh [output-dir]        # default: tests/env/k8s/.out
 #   FLINK_MCP_K8S_TEST_DIR=<output-dir> uv run pytest -m k8s
+#   (the Prometheus tests also need: kubectl -n flink port-forward svc/prometheus 9090:9090)
 #   kind delete cluster --name flinkmcp-test    # when done
 #
 # Needs: docker, kind, kubectl, helm. Never touches ~/.kube.
@@ -44,6 +45,10 @@ for _ in $(seq 1 90); do
   sleep 5
 done
 [ "$state" = "READY/RUNNING" ] || { echo "orders did not become READY/RUNNING (last: $state)" >&2; exit 1; }
+
+echo "==> Prometheus (scrapes the 'orders' pods)"
+kubectl apply -f "$here/prometheus.yaml"
+kubectl rollout status deployment/prometheus -n flink --timeout=180s
 
 echo "==> service account kubeconfigs"
 server="$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.server}')"

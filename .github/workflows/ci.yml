@@ -61,7 +61,11 @@ jobs:
       - run: uv sync --extra dev
       - name: Create cluster, install the operator, deploy test Flink clusters
         run: bash tests/env/k8s/setup.sh "$RUNNER_TEMP/k8s"
-      - run: FLINK_MCP_K8S_TEST_DIR="$RUNNER_TEMP/k8s" uv run pytest -m k8s -v
+      - name: Reach Prometheus in the cluster
+        run: |
+          KUBECONFIG="$RUNNER_TEMP/k8s/admin.kubeconfig" nohup kubectl -n flink port-forward svc/prometheus 9090:9090 >/dev/null 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:9090/-/ready && break; sleep 2; done
+      - run: FLINK_MCP_K8S_TEST_DIR="$RUNNER_TEMP/k8s" uv run pytest -m k8s -v -s
       - name: Cluster state on failure
         if: failure()
         run: |
