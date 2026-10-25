@@ -146,3 +146,13 @@ async def test_a_loopback_bind_with_a_token_keeps_localhost_only():
     assert "localhost only" in configure_host_checks(FastMCP("t"), "127.0.0.1", None, True)
     loopback = lan(authenticated=True, host="127.0.0.1")
     assert await initialize(loopback, "evil.example:8000") == 421
+
+
+async def test_loopback_protection_does_not_depend_on_the_sdk_default():
+    """mcp before 1.23 had no Host check by default; the bind must be protected regardless."""
+    def without_sdk_default(server):
+        server.settings.transport_security = None
+        configure_host_checks(server, "127.0.0.1", None, False)
+
+    assert await initialize(without_sdk_default, "evil.example:8000") == 421
+    assert await initialize(without_sdk_default, "localhost:8000") == 200

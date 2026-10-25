@@ -30,7 +30,9 @@ This page describes what has been checked and what has not. None of it is a guar
 
 - Tokens are compared in constant time. A token in the URL is not accepted.
 - The server speaks **plain HTTP**. Put a TLS-terminating proxy in front before exposing it.
-- Host/Origin checks (DNS-rebinding protection) depend on how the server is bound:
+- Host/Origin checks (DNS-rebinding protection) are always configured by this server, not left to
+  the MCP SDK's default (which before `mcp` 1.23 was no check; the package requires `mcp>=1.23`).
+  They depend on how the server is bound:
 
   | Bind | Token enforced | `FLINK_MCP_ALLOWED_HOSTS` | Host/Origin check |
   | --- | --- | --- | --- |

@@ -22,6 +22,17 @@ jobs:
       - name: Run via uvx
         run: uvx --from . flink-mcp-server --version
 
+  oldest-sdk:
+    # The lowest MCP SDK the package allows (pyproject.toml). Earlier SDKs had no Host check by default.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv pip install "mcp==1.23.0"
+      - run: uv run --no-sync python -c "import importlib.metadata as m; print('mcp', m.version('mcp'))"
+      - run: uv run --no-sync pytest -m "not integration and not k8s"
+
   integration:
     runs-on: ubuntu-latest
     needs: unit

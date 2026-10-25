@@ -80,18 +80,18 @@ def configure_host_checks(
     On a bind with no token (`--no-auth`) nothing else stands in the way of such a page, so the
     check stays on, accepting localhost and the address the server is bound to.
     """
-    try:
-        from mcp.server.transport_security import TransportSecuritySettings
-    except ImportError:  # older SDKs have no such check
-        return "host checks: not provided by this mcp version"
+    # Always configured here rather than left to the SDK's default: before mcp 1.23 that default
+    # was "no check", which would leave a loopback bind open to DNS rebinding.
+    from mcp.server.transport_security import TransportSecuritySettings
+
     names = [h.strip() for h in (allowed or "").split(",") if h.strip()]
     if not names and not is_loopback(host) and authenticated:
         server.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
         return "host checks: any Host, the bearer token protects this bind (set FLINK_MCP_ALLOWED_HOSTS to restrict)"
-    if not names and is_loopback(host):
-        return "host checks: localhost only"
     base = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
-    if not names:
+    if not names and is_loopback(host):
+        note = "host checks: localhost only"
+    elif not names:
         if host not in ("0.0.0.0", "::", ""):
             names = [f"[{host}]:*" if ":" in host else f"{host}:*"]
         note = "host checks: localhost and the bind address only; no token is enforced, set FLINK_MCP_ALLOWED_HOSTS for other names"
