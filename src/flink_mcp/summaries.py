@@ -139,6 +139,25 @@ def summarize_taskmanagers(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def summarize_log_files(payload: dict[str, Any], taskmanager_id: str | None = None) -> dict[str, Any]:
+    return {
+        "source": f"taskmanager {taskmanager_id}" if taskmanager_id else "jobmanager",
+        "files": [
+            {"name": f.get("name"), "size": f.get("size"), "modified": f.get("mtime")}
+            for f in payload.get("logs", [])
+        ],
+    }
+
+
+def default_log_file(payload: dict[str, Any]) -> str | None:
+    """The newest *.log file; Flink also lists .out files, which hold stdout, not the log."""
+    files = payload.get("logs", [])
+    logs = [f for f in files if str(f.get("name", "")).endswith(".log")] or files
+    if not logs:
+        return None
+    return max(logs, key=lambda f: f.get("mtime") or 0).get("name")
+
+
 MAX_LISTED = 100
 
 

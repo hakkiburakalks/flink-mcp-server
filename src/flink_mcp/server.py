@@ -8,8 +8,9 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from . import __version__, kube_summaries, summaries
-from .client import FlinkClient
+from .client import FlinkClient, log_file_path
 from .config import ClusterRegistry, load_clusters, load_kube_settings
+from .logs import LogTail
 from .transport import serve_http
 
 mcp = FastMCP("flink")
@@ -172,6 +173,45 @@ async def diagnose_job(job_id: str, cluster: str | None = None) -> dict[str, Any
 async def taskmanagers(cluster: str | None = None) -> list[dict[str, Any]]:
     """TaskManagers with slot usage and resources."""
     return summaries.summarize_taskmanagers(await (await get_client(cluster)).taskmanagers())
+
+
+@mcp.tool()
+async def list_log_files(
+    taskmanager_id: str | None = None, cluster: str | None = None
+) -> dict[str, Any]:
+    """Log files of the JobManager, or of one TaskManager when `taskmanager_id` is given
+    (ids come from `taskmanagers`)."""
+    return summaries.summarize_log_files(
+        await (await get_client(cluster)).log_files(taskmanager_id), taskmanager_id
+    )
+
+
+@mcp.tool()
+async def get_logs(
+    taskmanager_id: str | None = None,
+    file: str | None = None,
+    lines: int = 200,
+    level: str | None = None,
+    search: str | None = None,
+    cluster: str | None = None,
+) -> dict[str, Any]:
+    """Tail of a Flink log: the JobManager's, or one TaskManager's when `taskmanager_id` is
+    given. `level` ("WARN", "ERROR", ...) keeps only entries at that level or above, each with
+    its stack trace; `search` keeps entries containing the text (case-insensitive). `file`
+    defaults to the newest *.log; see `list_log_files`. The result also counts the warnings
+    and errors in the whole file, so a clean tail of a noisy file is not mistaken for a clean log."""
+    client = await get_client(cluster)
+    name = file or summaries.default_log_file(await client.log_files(taskmanager_id))
+    if not name:
+        return {"error": "No log files found. Is log access disabled on this cluster?"}
+    tail = LogTail(lines=max(1, min(lines, 1000)), level=level, search=search)
+    complete = await client.log_tail(log_file_path(taskmanager_id, name), tail)
+    return {
+        "source": f"taskmanager {taskmanager_id}" if taskmanager_id else "jobmanager",
+        "file": name,
+        **tail.result(),
+        "complete": complete,
+    }
 
 
 @mcp.tool()

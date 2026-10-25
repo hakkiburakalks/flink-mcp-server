@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+from .logs import LogTail
+
 
 class FlinkConnectionError(Exception):
     pass
@@ -32,6 +34,15 @@ def _http_error_message(resp: httpx.Response) -> str:
         if "/proxy/" in resp.request.url.path:  # reached through the Kubernetes service proxy
             message += "; run diagnose_deployment to see the pods and the operator state"
     return message + "."
+
+
+def _log_path(taskmanager_id: str | None, name: str | None = None) -> str:
+    base = f"/taskmanagers/{taskmanager_id}/logs" if taskmanager_id else "/jobmanager/logs"
+    return f"{base}/{name}" if name else base
+
+
+def log_file_path(taskmanager_id: str | None, name: str) -> str:
+    return _log_path(taskmanager_id, name)
 
 
 class FlinkClient:
@@ -70,6 +81,25 @@ class FlinkClient:
         if resp.is_error:
             raise FlinkHTTPError(resp.status_code, _http_error_message(resp))
         return resp.json()
+
+    async def log_tail(self, path: str, tail: LogTail, max_bytes: int = 64 * 1024 * 1024) -> bool:
+        """Stream a plain-text log into `tail`; returns False if it stopped at `max_bytes`."""
+        try:
+            async with self._http.stream("GET", path) as resp:
+                if resp.is_error:
+                    await resp.aread()
+                    raise FlinkHTTPError(resp.status_code, _http_error_message(resp))
+                seen = 0
+                async for line in resp.aiter_lines():
+                    seen += len(line) + 1
+                    if seen > max_bytes:
+                        return False
+                    tail.feed(line)
+        except httpx.RequestError as e:
+            raise FlinkConnectionError(
+                f"Cannot reach Flink at {self._http.base_url}: {type(e).__name__} {e}".rstrip()
+            ) from e
+        return True
 
     async def overview(self) -> Any:
         return await self.get("/overview")
@@ -120,6 +150,12 @@ class FlinkClient:
 
     async def taskmanagers(self) -> Any:
         return await self.get("/taskmanagers")
+
+    async def log_files(self, taskmanager_id: str | None = None) -> Any:
+        return await self.get(_log_path(taskmanager_id))
+
+    async def taskmanager_ids(self) -> list[str]:
+        return [t["id"] for t in (await self.taskmanagers()).get("taskmanagers", [])]
 
     async def aclose(self) -> None:
         await self._http.aclose()
