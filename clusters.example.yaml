@@ -1,5 +1,11 @@
 # Point FLINK_CLUSTERS_FILE at a copy of this file.
 default: local
+# Optional: also discover FlinkDeployments (Flink Kubernetes Operator) as clusters
+# named <namespace>/<name>. Uses your kubeconfig; see the README.
+# kubernetes:
+#   namespaces: [flink]
+#   access: proxy
+
 clusters:
   local:
     url: http://localhost:8081

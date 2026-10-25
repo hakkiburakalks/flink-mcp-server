@@ -1,0 +1,41 @@
+# Minimal read-only access for flink-mcp-server's Kubernetes discovery.
+#   kubectl apply -f examples/kubernetes-rbac.yaml
+#   kubectl create token flink-mcp -n flink --duration=24h      # put this in a kubeconfig user
+#
+# Everything is get/list only. `services/proxy` + `get` lets the server read each
+# deployment's Flink REST API through the API server; it cannot change anything.
+# To limit it to some namespaces, turn the ClusterRole/ClusterRoleBinding into a
+# Role/RoleBinding per namespace and set `kubernetes.namespaces` accordingly.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink-mcp
+  namespace: flink
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flink-mcp-reader
+rules:
+  - apiGroups: ["flink.apache.org"]
+    resources: ["flinkdeployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flink-mcp-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flink-mcp-reader
+subjects:
+  - kind: ServiceAccount
+    name: flink-mcp
+    namespace: flink

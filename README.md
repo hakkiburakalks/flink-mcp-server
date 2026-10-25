@@ -22,7 +22,9 @@ Tool output is summarized for LLMs rather than returning raw REST JSON.
 | `job_metrics` | Job metric values, or the catalogue of available metric ids (filterable) |
 | `list_jars` | Uploaded JARs and their entry classes |
 | `cluster_config` | JobManager configuration, filterable by key |
-| `list_clusters` | Configured clusters (names and URLs only) |
+| `list_clusters` | Configured and Kubernetes-discovered clusters (names and URLs only), plus any `discovery_error` |
+| `list_flink_deployments` | FlinkDeployments (Flink Kubernetes Operator): lifecycle, JobManager and job state, operator errors |
+| `diagnose_deployment` | Operator/pod-level health of one FlinkDeployment: operator error, JobManager state, CrashLoopBackOff, OOMKilled, image pull errors, unschedulable pods |
 | `fleet_overview` | Overview of all clusters in one call; unreachable ones report an error |
 | `diagnose_job` | One-call verdict (`healthy`/`degraded`/`critical`) with ranked findings from state, tasks, exceptions, checkpoints and backpressure |
 
@@ -39,10 +41,46 @@ All per-cluster tools take an optional `cluster` argument; omit it for the defau
 | `FLINK_MCP_AUTH_TOKEN` | unset | Bearer token required on every HTTP request |
 | `FLINK_MCP_REQUIRE_AUTH` | `true` | `false` is the same as `--no-auth` |
 | `FLINK_CLUSTERS_FILE` | unset | YAML with several clusters (overrides the two above) |
+| `FLINK_KUBERNETES` | `false` | `true` turns on Kubernetes discovery (see below) |
+| `FLINK_KUBERNETES_NAMESPACES` | all | Comma-separated namespaces to look in |
+| `FLINK_KUBE_CONTEXT` / `FLINK_KUBECONFIG` | current context / `$KUBECONFIG` or `~/.kube/config` | Which cluster and credentials to use |
+| `FLINK_KUBERNETES_ACCESS` | `proxy` | `proxy` or `service`, see below |
 
 Multiple clusters: copy `clusters.example.yaml`, then set `FLINK_CLUSTERS_FILE`.
 Per cluster: `url`, `token` or `token_env` (preferred, keeps secrets out of the file),
 `ca_cert`, `insecure`, `timeout`.
+
+## Kubernetes
+
+With the [Flink Kubernetes Operator](https://nightlies.apache.org/flink/flink-kubernetes-operator-docs-main/)
+the server finds your `FlinkDeployment`s itself. No cluster list, no port-forward:
+
+```
+FLINK_KUBERNETES=true uvx flink-mcp-server
+```
+
+Every deployment becomes a cluster named `<namespace>/<name>`, so `cluster_overview`,
+`diagnose_job` and the other tools work on it with `cluster: "flink/orders"`. The list is
+refreshed every minute. `list_flink_deployments` and `diagnose_deployment` look at the
+Kubernetes side (operator errors, pod states) when a job's REST API is not even reachable.
+
+Or in the clusters file, next to any static clusters (static entries win on a name clash):
+
+```yaml
+kubernetes:
+  namespaces: [flink, streaming]   # default: all namespaces
+  context: prod                    # default: the kubeconfig's current context
+  access: proxy                    # or "service", see below
+```
+
+- **Credentials** come from your kubeconfig (`$KUBECONFIG`, `~/.kube/config`) or, inside a pod,
+  the service account. Tokens, client certificates and `exec` plugins (EKS, GKE, ...) work.
+- **`access: proxy`** (default) reaches each deployment's `<name>-rest` service through the
+  Kubernetes API server, so it works from your laptop with only kubeconfig access.
+  **`access: service`** uses in-cluster DNS (`http://<name>-rest.<ns>.svc:8081`); use it when
+  the server itself runs in the cluster.
+- **Permissions**: read-only. [`examples/kubernetes-rbac.yaml`](https://github.com/hakkiburakalks/flink-mcp-server/blob/main/examples/kubernetes-rbac.yaml)
+  grants `get`/`list` on `flinkdeployments` and `pods` and `get` on `services/proxy`, nothing else.
 
 ## Install and run
 
@@ -141,5 +179,5 @@ uv run pytest -m integration       # needs the local cluster (Docker)
 
 ## Roadmap
 
-Done: V2 multi-cluster, token/TLS options, Streamable HTTP with bearer auth.
-Next: Kubernetes discovery, V3 diagnostics (Prometheus, logs), V4 approval-gated operations and SQL Gateway.
+Done: V2 multi-cluster, token/TLS options, Streamable HTTP with bearer auth, Kubernetes discovery.
+Next: V3 diagnostics (Prometheus, logs), V4 approval-gated operations and SQL Gateway.

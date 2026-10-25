@@ -27,6 +27,10 @@ def _http_error_message(resp: httpx.Response) -> str:
         message += f": {errors[0].splitlines()[0].rstrip('.')}"
     if resp.status_code in (401, 403):
         message += ". Check the cluster's token / token_env (and any proxy in front of Flink)"
+    elif resp.status_code in (502, 503, 504):
+        message += ". The JobManager may be down or not ready"
+        if "/proxy/" in resp.request.url.path:  # reached through the Kubernetes service proxy
+            message += "; run diagnose_deployment to see the pods and the operator state"
     return message + "."
 
 
@@ -42,6 +46,7 @@ class FlinkClient:
         verify: bool | str = True,
         metrics_retries: int = 3,
         metrics_retry_delay: float = 1.0,
+        auth: httpx.Auth | None = None,
     ) -> None:
         self.metrics_retries = metrics_retries
         self.metrics_retry_delay = metrics_retry_delay
@@ -51,6 +56,7 @@ class FlinkClient:
             headers=headers,
             transport=transport,
             verify=verify,
+            auth=auth,
         )
 
     async def get(self, path: str, **params: Any) -> Any:

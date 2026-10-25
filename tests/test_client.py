@@ -93,3 +93,19 @@ async def test_non_metric_endpoints_do_not_retry():
 
     await make_retry_client(handler).taskmanagers()
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+async def test_gateway_errors_say_the_jobmanager_may_be_down(status):
+    client = make_client(lambda r: httpx.Response(status, text=""))
+    with pytest.raises(FlinkHTTPError, match=r"JobManager may be down or not ready\.$"):
+        await client.overview()
+
+
+async def test_gateway_errors_via_kubernetes_proxy_point_at_diagnose_deployment():
+    client = FlinkClient(
+        "https://k8s/api/v1/namespaces/f/services/x-rest:8081/proxy",
+        transport=httpx.MockTransport(lambda r: httpx.Response(503, text="")),
+    )
+    with pytest.raises(FlinkHTTPError, match="run diagnose_deployment"):
+        await client.overview()
