@@ -62,9 +62,13 @@ give the server a token that is read-only and limited to what you are willing to
 - Short events can be missed: trends come from scrapes, so anything that starts and ends between two
   scrapes (a quick restart, a brief backpressure spike) may not show. The step never goes below the
   scrape interval you configured in Prometheus.
-- Not verified against a live system, only by unit tests: how counter resets are handled when the
-  JobManager itself restarts (its counters start again from zero), and the Kubernetes
-  `discovered_selector` template mapping on a real cluster. Everything else above was checked
-  against Flink 1.20 and Prometheus 2.55.
+- Checked on a live kind cluster (Flink Kubernetes Operator, Prometheus scraping the pods; CI job
+  `kubernetes`): the `discovered_selector` template maps a `FlinkDeployment` to its series, and
+  without a selector two deployments are reported `unmapped`. After the JobManager pod was deleted
+  the job kept its id, the trend analysis still answered `ok`, and no increase was negative. That
+  test does not show a counter dropping to zero inside one series: a replaced pod gets a new `pod`
+  label, so its counters arrive as a new series. Reset handling for a single series (a process
+  restarted in place, with the same labels) is covered by unit tests only.
+- Everything else above was checked against Flink 1.20 and Prometheus 2.55.
 - Metric names assume the Flink Prometheus reporter's default scope format; override them with
   `metrics:` if yours differ.
