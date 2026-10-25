@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import secrets
 import sys
 from typing import Any
@@ -64,6 +65,33 @@ def resolve_auth(host: str, token: str | None, require_auth: bool) -> tuple[str 
     return generated, f"generated bearer token (set FLINK_MCP_AUTH_TOKEN to choose your own): {generated}"
 
 
+def configure_host_checks(server: FastMCP, host: str, allowed: str | None = None) -> str:
+    """Make the SDK's Host/Origin checks fit how the server is bound; returns a note for the log.
+
+    The SDK protects against DNS rebinding by accepting only localhost Host headers. That is
+    right for a loopback bind, but it answers 421 to every request that reaches a LAN bind by
+    its real name. `FLINK_MCP_ALLOWED_HOSTS` (comma-separated, `name:*` allowed) lists the names
+    clients use; without it a non-loopback bind skips the check, which is safe here because
+    that bind is protected by the bearer token (a browser does not attach one on its own).
+    """
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+    except ImportError:  # older SDKs have no such check
+        return "host checks: not provided by this mcp version"
+    names = [h.strip() for h in (allowed or "").split(",") if h.strip()]
+    if names:
+        server.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=names,
+            allowed_origins=[f"{scheme}://{n}" for n in names for scheme in ("http", "https")],
+        )
+        return f"host checks: only {', '.join(names)} (FLINK_MCP_ALLOWED_HOSTS)"
+    if is_loopback(host):
+        return "host checks: localhost only"
+    server.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    return "host checks: any Host (set FLINK_MCP_ALLOWED_HOSTS to restrict)"
+
+
 def build_http_app(server: FastMCP, token: str | None) -> Any:
     app = server.streamable_http_app()
     return BearerAuthMiddleware(app, token) if token else app
@@ -73,7 +101,8 @@ def serve_http(
     server: FastMCP, host: str, port: int, token: str | None, require_auth: bool = True
 ) -> None:
     effective, note = resolve_auth(host, token, require_auth)
-    print(f"flink-mcp-server: http://{host}:{port}/mcp - {note}", file=sys.stderr, flush=True)
     server.settings.host = host
     server.settings.port = port
+    checks = configure_host_checks(server, host, os.environ.get("FLINK_MCP_ALLOWED_HOSTS"))
+    print(f"flink-mcp-server: http://{host}:{port}/mcp - {note}; {checks}", file=sys.stderr, flush=True)
     uvicorn.run(build_http_app(server, effective), host=host, port=port, log_level="info")
