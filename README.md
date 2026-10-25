@@ -107,8 +107,24 @@ cluster) and `PROMETHEUS_DISCOVERED_SELECTOR` (`namespace={namespace},deployment
 
 Limits: queries time out after `timeout` seconds, ranges are capped at `max_range`, the step is
 raised to stay within `max_points` per series, at most `max_series` series and 8 MB come back, and
-every response says what was cut (`limits_applied`). The raw tools are not scoped to a Flink
-cluster; `cluster` only chooses which Prometheus to ask.
+every response says what was cut (`limits_applied`).
+
+**The raw query tools are not scoped and are not a security boundary.** In `prometheus_query` and
+`prometheus_query_range`, `cluster` only chooses which Prometheus connection to use; it does not
+restrict the query to that Flink cluster's series, and `selector` is not applied to raw queries.
+Whoever can call these tools can read anything the configured Prometheus credentials can read, so
+give the server a token that is read-only and limited to what you are willing to expose.
+
+**Known limits.**
+- Short events can be missed: trends come from scrapes, so anything that starts and ends between two
+  scrapes (a quick restart, a brief backpressure spike) may not show. The step never goes below the
+  scrape interval you configured in Prometheus.
+- Not verified against a live system, only by unit tests: how counter resets are handled when the
+  JobManager itself restarts (its counters start again from zero), and the Kubernetes
+  `discovered_selector` template mapping on a real cluster. Everything else above was checked
+  against Flink 1.20 and Prometheus 2.55.
+- Metric names assume the Flink Prometheus reporter's default scope format; override them with
+  `metrics:` if yours differ.
 
 ## Kubernetes
 
