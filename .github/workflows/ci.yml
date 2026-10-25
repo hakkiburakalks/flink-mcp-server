@@ -29,21 +29,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --extra dev
-      - run: docker compose up -d
+      - run: docker compose -f tests/docker-compose.yml up -d
       - name: Wait for Flink REST
         run: |
           for i in $(seq 1 30); do
             curl -sf http://localhost:8081/overview | grep -q '"taskmanagers":1' && exit 0
             sleep 2
           done
-          docker compose logs
+          docker compose -f tests/docker-compose.yml logs
           exit 1
       - run: uv run pytest -m integration
       - if: always()
-        run: docker compose down
-
-  docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build -t flink-mcp-server .
+        run: docker compose -f tests/docker-compose.yml down

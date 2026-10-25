@@ -30,4 +30,4 @@ packages = ["src/flink_mcp"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = ["integration: needs a running Flink cluster (docker compose up -d)"]
+markers = ["integration: needs a running Flink cluster (docker compose -f tests/docker-compose.yml up -d)"]

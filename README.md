@@ -90,14 +90,13 @@ Authentication is on by default:
 
 The server speaks plain HTTP: put it behind a TLS-terminating proxy before exposing it.
 
-Docker: `docker run --rm -p 8000:8000 -e FLINK_MCP_AUTH_TOKEN=change-me flink-mcp-server --transport streamable-http --host 0.0.0.0`
 
 ## Test
 
 ```
 uv run pytest                      # unit tests
-docker compose up -d
-uv run pytest -m integration       # needs the local cluster
+docker compose -f tests/docker-compose.yml up -d
+uv run pytest -m integration       # needs the local cluster (Docker)
 ```
 
 ## Roadmap
