@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
+import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -8,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from . import summaries
 from .client import FlinkClient
 from .config import ClusterRegistry, load_clusters
+from .transport import serve_http
 
 mcp = FastMCP("flink")
 
@@ -133,8 +136,20 @@ async def job_config(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     return await get_client(cluster).job_config(job_id)
 
 
-def main() -> None:
-    mcp.run()
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="flink-mcp-server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default=os.environ.get("FLINK_MCP_TRANSPORT", "stdio"),
+    )
+    parser.add_argument("--host", default=os.environ.get("FLINK_MCP_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("FLINK_MCP_PORT", "8000")))
+    args = parser.parse_args(argv)
+    if args.transport == "stdio":
+        mcp.run()
+    else:
+        serve_http(mcp, args.host, args.port, os.environ.get("FLINK_MCP_AUTH_TOKEN"))
 
 
 if __name__ == "__main__":
