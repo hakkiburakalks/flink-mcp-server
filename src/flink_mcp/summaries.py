@@ -230,15 +230,24 @@ _VERDICT = {0: "healthy", 1: "degraded", 2: "critical"}
 
 def diagnose(
     job: dict[str, Any],
-    exceptions: dict[str, Any],
-    checkpoints: dict[str, Any],
+    exceptions: dict[str, Any] | None,
+    checkpoints: dict[str, Any] | None,
     backpressure: list[dict[str, Any]],
+    unavailable: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Combine already-summarized job signals into a verdict with ranked findings."""
+    """Combine already-summarized job signals into a verdict with ranked findings.
+
+    A signal that could not be read (None, named in `unavailable`) is reported as not assessed
+    rather than counted as healthy.
+    """
+    exceptions, checkpoints = exceptions or {}, checkpoints or {}
     findings: list[dict[str, str]] = []
 
     def add(severity: str, area: str, message: str) -> None:
         findings.append({"severity": severity, "area": area, "message": message})
+
+    for area, why in (unavailable or {}).items():
+        add("warning", area, f"Could not read {area} ({why}); this part of the job was not assessed.")
 
     state = job.get("state")
     if state in ("FAILED", "FAILING"):
@@ -299,6 +308,14 @@ def diagnose(
             add("critical", "backpressure", f"Vertex '{v['vertex']}' is backpressured {v['backpressured_ms_per_s']} ms/s; {where}.")
         elif v.get("level") == "low":
             add("warning", "backpressure", f"Vertex '{v['vertex']}' shows moderate backpressure ({v['backpressured_ms_per_s']} ms/s).")
+
+    if (
+        state == "RUNNING"
+        and backpressure
+        and all(v.get("level") == "unknown" for v in backpressure)
+        and "backpressure" not in (unavailable or {})
+    ):
+        add("info", "backpressure", "Backpressure was not assessed: Flink returned no usable metrics for any vertex.")
 
     findings.sort(key=lambda f: -_SEVERITY_ORDER[f["severity"]])
     worst = max((_SEVERITY_ORDER[f["severity"]] for f in findings), default=0)

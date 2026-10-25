@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -41,6 +42,16 @@ class PromSettings:
     task_label: str = "task_name"
     selector: tuple[tuple[str, str], ...] = ()  # extra label matchers that pin one Flink cluster
     metrics: tuple[tuple[str, str], ...] = field(default_factory=tuple)  # metric name overrides
+
+
+MAX_QUERY_CHARS = 10_000
+
+
+def _check_query(promql: str) -> None:
+    if not promql.strip():
+        raise ValueError("the PromQL query is empty")
+    if len(promql) > MAX_QUERY_CHARS:
+        raise ValueError(f"the PromQL query is longer than {MAX_QUERY_CHARS} characters")
 
 
 def parse_duration(text: str | int | float) -> int:
@@ -135,12 +146,14 @@ class PromClient:
                 raise PromError(f"Prometheus: environment variable {settings.token_env} is not set")
         self._token = token
         self._shown_url = redact_url(settings.url)
+        self._slots = asyncio.Semaphore(8)
         self._http = httpx.AsyncClient(
             base_url=settings.url.rstrip("/"),
             timeout=settings.timeout,
             headers={"Authorization": f"Bearer {token}"} if token else None,
             verify=False if settings.insecure else (settings.ca_cert or True),
             transport=transport,
+            follow_redirects=False,  # a redirect must never carry the token to another host
         )
 
     @property
@@ -152,7 +165,7 @@ class PromClient:
 
     async def _get(self, path: str, **params: Any) -> dict[str, Any]:
         try:
-            async with self._http.stream("GET", path, params=params) as resp:
+            async with self._slots, self._http.stream("GET", path, params=params) as resp:
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
                     body.extend(chunk)
@@ -170,6 +183,11 @@ class PromClient:
         except ValueError:
             doc = None
         detail = doc.get("error") if isinstance(doc, dict) else None
+        if resp.is_redirect:
+            raise PromError(
+                f"Prometheus answered HTTP {resp.status_code} with a redirect that was not followed "
+                "(the token is never sent to a redirect target). Point the url at the final address"
+            )
         if resp.status_code in (401, 403):
             raise PromError(
                 f"Prometheus rejected the credentials (HTTP {resp.status_code}). "
@@ -196,6 +214,7 @@ class PromClient:
         return f"{self.settings.timeout:g}s"
 
     async def query(self, promql: str, at: float | None = None) -> dict[str, Any]:
+        _check_query(promql)
         params: dict[str, Any] = {"query": promql, "timeout": self._timeout_param()}
         if at is not None:
             params["time"] = at
@@ -204,6 +223,7 @@ class PromClient:
 
     async def query_range(self, promql: str, start: float, end: float, step: float) -> dict[str, Any]:
         s = self.settings
+        _check_query(promql)
         if end <= start:
             raise ValueError("the end of the range must be after its start")
         if end - start > s.max_range:

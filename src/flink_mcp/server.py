@@ -4,7 +4,8 @@ import argparse
 import asyncio
 import os
 import time
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
 
@@ -15,12 +16,23 @@ from .config import (
 )
 from .kube import KubeError
 from .logs import LogTail
-from .prometheus import PromError, format_duration, parse_duration, parse_time
+from .prometheus import PromError, format_duration, parse_duration, parse_time, redact_url
 from .transport import serve_http
 
-mcp = FastMCP("flink")
-
 _registry: ClusterRegistry | None = None
+MAX_METRIC_NAMES = 50
+
+
+@asynccontextmanager
+async def _lifespan(_server: FastMCP) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:  # close the HTTP clients opened for Flink, Kubernetes and Prometheus
+        if _registry is not None:
+            await _registry.aclose()
+
+
+mcp = FastMCP("flink", lifespan=_lifespan)
 
 
 def get_registry() -> ClusterRegistry:
@@ -50,7 +62,7 @@ async def list_clusters() -> dict[str, Any]:
         "clusters": [
             {
                 "name": c.name,
-                "url": c.url,
+                "url": redact_url(c.url),
                 "default": c.name == reg.default,
                 "source": "kubernetes" if c.via_kube else "config",
             }
@@ -99,7 +111,7 @@ async def diagnose_deployment(namespace: str, name: str) -> dict[str, Any]:
     kube = get_registry().kube_client()
     dep = kube_summaries.summarize_deployment(await kube.flink_deployment(namespace, name))
     pods = [
-        kube_summaries.summarize_pod(p) for p in await kube.pods(namespace, f"app={name}")
+        kube_summaries.summarize_pod(p) for p in await kube.pods(namespace, name)
     ]
     return {**kube_summaries.deployment_health(dep, pods), "deployment": dep, "pods": pods}
 
@@ -154,10 +166,15 @@ async def _backpressure(
         *(
             client.vertex_subtask_metrics(job_id, v["id"], summaries.BACKPRESSURE_METRICS)
             for v in vertices
-        )
+        ),
+        return_exceptions=True,
     )
+    failed = [m for m in metrics if isinstance(m, BaseException)]
+    if failed and len(failed) == len(metrics):
+        raise failed[0]  # nothing could be read: the caller reports the source as unavailable
     return [
-        summaries.summarize_backpressure(v.get("name"), v["id"], m) for v, m in zip(vertices, metrics)
+        summaries.summarize_backpressure(v.get("name"), v["id"], [] if isinstance(m, BaseException) else m)
+        for v, m in zip(vertices, metrics)
     ]
 
 
@@ -222,11 +239,11 @@ async def _kube_timeline_source(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[str]]:
     kube = registry.kube_client()
     deployment, pods = await asyncio.gather(
-        kube.events(namespace, f"involvedObject.kind=FlinkDeployment,involvedObject.name={name}"),
-        kube.pods(namespace, f"app={name}"),
+        kube.events(namespace, "FlinkDeployment", name),
+        kube.pods(namespace, name),
     )
     pod_names = {p["metadata"]["name"] for p in pods}
-    pod_events = await kube.events(namespace, "involvedObject.kind=Pod") if pod_names else []
+    pod_events = await kube.events(namespace, "Pod") if pod_names else []
     return deployment, pod_events, pod_names
 
 
@@ -243,12 +260,30 @@ async def diagnose_job(
     client = await get_client(cluster)
     registry = get_registry()
     window = _history_window(registry, history)
-    raw_job = await client.job(job_id)
+    raw_job = await client.job(job_id)  # without the job itself there is nothing to diagnose
+    exceptions, checkpoints, backpressure = await asyncio.gather(
+        client.job_exceptions(job_id),
+        client.job_checkpoints(job_id),
+        _backpressure(client, job_id, raw_job),
+        return_exceptions=True,
+    )
+    unavailable: dict[str, str] = {}
+
+    def usable(area: str, value: Any, summarize: Any) -> Any:
+        """A secondary source that failed is reported as not assessed, never as healthy."""
+        if isinstance(value, (FlinkHTTPError, FlinkConnectionError)):
+            unavailable[area] = str(value)
+            return None
+        if isinstance(value, BaseException):
+            raise value
+        return summarize(value)
+
     result = summaries.diagnose(
         summaries.summarize_job(raw_job),
-        summaries.summarize_exceptions(await client.job_exceptions(job_id)),
-        summaries.summarize_checkpoints(await client.job_checkpoints(job_id)),
-        await _backpressure(client, job_id, raw_job),
+        usable("exceptions", exceptions, summaries.summarize_exceptions),
+        usable("checkpoints", checkpoints, summaries.summarize_checkpoints),
+        usable("backpressure", backpressure, lambda v: v) or [],
+        unavailable,
     )
     if window is None:
         return result
@@ -397,6 +432,8 @@ async def job_metrics(
     """Job-level metrics. Give `names` to read values; omit it to list the available
     metric ids (narrow them with `search`, e.g. "checkpoint"). Flink fetches metrics lazily,
     so right after a job starts the first answer can take a couple of seconds."""
+    if names and len(names) > MAX_METRIC_NAMES:
+        raise ValueError(f"ask for at most {MAX_METRIC_NAMES} metrics at a time")
     raw = await (await get_client(cluster)).job_metrics(job_id, names)
     return summaries.summarize_metrics(raw, search)
 

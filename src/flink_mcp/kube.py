@@ -22,11 +22,14 @@ from typing import Any, AsyncGenerator, Mapping
 import httpx
 import yaml
 
+from . import validation
 from .client import FlinkClient
+from .prometheus import redact_url
 
 SERVICE_ACCOUNT_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 FLINK_API = "/apis/flink.apache.org/v1beta1"
 DEFAULT_EXEC_TOKEN_TTL = 300.0
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024  # largest Kubernetes API answer that is read into memory
 
 
 class KubeError(Exception):
@@ -240,28 +243,45 @@ class KubeClient:
         self._auth = KubeAuth(cfg)
         self._verify = cfg.ssl_context() if transport is None else True
         self._timeout = timeout
+        self._slots = asyncio.Semaphore(8)
         self._http = httpx.AsyncClient(
             base_url=cfg.server,
             auth=self._auth,
             verify=self._verify,
             timeout=timeout,
             transport=transport,
+            follow_redirects=False,  # a redirect must never carry the credentials to another host
         )
 
     async def get(self, path: str, **params: Any) -> dict[str, Any]:
+        validation.safe_path(path)
+        shown = redact_url(self.server)
         try:
-            resp = await self._http.get(path, params=params or None)
+            async with self._slots, self._http.stream("GET", path, params=params or None) as resp:
+                body = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > MAX_RESPONSE_BYTES:
+                        raise KubeError(
+                            f"The Kubernetes API answer for {path} is larger than "
+                            f"{MAX_RESPONSE_BYTES // 1024 // 1024} MB; not read."
+                        )
         except httpx.RequestError as e:
             raise KubeError(
-                f"Cannot reach the Kubernetes API at {self.server}: {type(e).__name__} {e}".rstrip()
+                f"Cannot reach the Kubernetes API at {shown}: {type(e).__name__} {e}".rstrip()
             ) from e
+        if resp.is_redirect:
+            raise KubeError(f"The Kubernetes API answered {resp.status_code} with a redirect that was not followed.")
         if resp.is_error:
-            raise KubeError(_status_message(resp))
-        return resp.json()
+            raise KubeError(_status_message(resp, bytes(body)))
+        try:
+            return json.loads(bytes(body))
+        except ValueError as e:
+            raise KubeError(f"{shown} did not return JSON; is the kubeconfig server a Kubernetes API?") from e
 
     async def flink_deployments(self, namespaces: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         paths = (
-            [f"{FLINK_API}/namespaces/{ns}/flinkdeployments" for ns in namespaces]
+            [f"{FLINK_API}/namespaces/{validation.namespace(ns)}/flinkdeployments" for ns in namespaces]
             if namespaces
             else [f"{FLINK_API}/flinkdeployments"]
         )
@@ -271,15 +291,28 @@ class KubeClient:
         return items
 
     async def flink_deployment(self, namespace: str, name: str) -> dict[str, Any]:
-        return await self.get(f"{FLINK_API}/namespaces/{namespace}/flinkdeployments/{name}")
+        return await self.get(
+            f"{FLINK_API}/namespaces/{validation.namespace(namespace)}/flinkdeployments/"
+            f"{validation.resource_name(name)}"
+        )
 
-    async def pods(self, namespace: str, selector: str) -> list[dict[str, Any]]:
-        data = await self.get(f"/api/v1/namespaces/{namespace}/pods", labelSelector=selector)
+    async def pods(self, namespace: str, app: str) -> list[dict[str, Any]]:
+        """Pods the operator created for the FlinkDeployment `app` (label app=<name>)."""
+        data = await self.get(
+            f"/api/v1/namespaces/{validation.namespace(namespace)}/pods",
+            labelSelector=f"app={validation.resource_name(app)}",
+        )
         return data.get("items", [])
 
-    async def events(self, namespace: str, field_selector: str) -> list[dict[str, Any]]:
+    async def events(self, namespace: str, kind: str, name: str | None = None) -> list[dict[str, Any]]:
+        """Events about objects of `kind` (a FlinkDeployment or Pod), optionally one named object."""
+        if kind not in ("FlinkDeployment", "Pod"):
+            raise ValueError(f"events are only read for FlinkDeployments and Pods, not '{kind}'")
+        selector = f"involvedObject.kind={kind}"
+        if name is not None:
+            selector += f",involvedObject.name={validation.resource_name(name)}"
         data = await self.get(
-            f"/api/v1/namespaces/{namespace}/events", fieldSelector=field_selector, limit=500
+            f"/api/v1/namespaces/{validation.namespace(namespace)}/events", fieldSelector=selector, limit=500
         )
         return data.get("items", [])
 
@@ -303,9 +336,9 @@ class KubeClient:
         await self._http.aclose()
 
 
-def _status_message(resp: httpx.Response) -> str:
+def _status_message(resp: httpx.Response, body: bytes = b"") -> str:
     try:
-        detail = resp.json().get("message") or ""
+        detail = json.loads(body).get("message") or ""
     except (ValueError, AttributeError):
         detail = ""
     code = resp.status_code

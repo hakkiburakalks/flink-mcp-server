@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from dataclasses import dataclass, field, replace
@@ -15,6 +16,7 @@ from .prometheus import (
 )
 
 DEFAULT_URL = "http://localhost:8081"
+FAILED_DISCOVERY_RETRY = 10.0  # seconds before trying again after a failed discovery
 
 
 class ConfigError(ValueError):
@@ -286,6 +288,7 @@ class ClusterRegistry:
         self._kube_client = kube_client
         self._discovery_ttl = discovery_ttl
         self._discovered_at: float | None = None
+        self._discovery_lock = asyncio.Lock()
         self.discovery_error: str | None = None
 
     def names(self) -> list[str]:
@@ -306,15 +309,24 @@ class ClusterRegistry:
         """Re-discover FlinkDeployments (at most once per TTL). Failures keep the old list."""
         if not self.kube_settings:
             return
-        now = time.monotonic()
-        if not force and self._discovered_at is not None and now - self._discovered_at < self._discovery_ttl:
-            return
-        try:
-            kube = self.kube_client()
-            deployments = await kube.flink_deployments(self.kube_settings.namespaces)
-        except (KubeError, ConfigError) as e:
-            self.discovery_error = str(e)
-            return
+        async with self._discovery_lock:  # concurrent tool calls share one discovery
+            now = time.monotonic()
+            fresh = self._discovered_at is not None and now - self._discovered_at < self._discovery_ttl
+            if fresh and not force:
+                return
+            try:
+                kube = self.kube_client()
+                deployments = await kube.flink_deployments(self.kube_settings.namespaces)
+            except (KubeError, ConfigError) as e:
+                self.discovery_error = str(e)
+                # Retry soon, but not on every call while the API server is down or slow.
+                retry = min(self._discovery_ttl, FAILED_DISCOVERY_RETRY)
+                self._discovered_at = now - self._discovery_ttl + retry
+                return
+            await self._apply_discovery(kube, deployments)
+            self._discovered_at = now
+
+    async def _apply_discovery(self, kube: KubeClient, deployments: list[dict[str, Any]]) -> None:
         found: dict[str, ClusterConfig] = {}
         for dep in deployments:
             meta = dep.get("metadata", {})
@@ -326,13 +338,13 @@ class ClusterRegistry:
                 continue  # an explicit entry wins
             url = kube.rest_url(namespace, name, self.kube_settings.access)
             found[key] = ClusterConfig(key, url, via_kube=True)
-        for gone in [n for n, c in self.clusters.items() if c.via_kube and n not in found]:
-            self._clients.pop(gone, None)
-        for changed in [n for n, c in found.items() if n in self.clusters and self.clusters[n].url != c.url]:
-            self._clients.pop(changed, None)
+        stale = [n for n, c in self.clusters.items() if c.via_kube and n not in found]
+        stale += [n for n, c in found.items() if n in self.clusters and self.clusters[n].url != c.url]
+        for name in stale:
+            if client := self._clients.pop(name, None):
+                await client.aclose()  # do not leak the connection of a vanished or moved cluster
         self.clusters = {**self._static, **found}
         self.discovery_error = None
-        self._discovered_at = now
 
     def _resolve(self, name: str | None) -> str:
         name = name or self.default
