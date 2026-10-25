@@ -1,10 +1,47 @@
-.venv/
+# Python
 __pycache__/
+*.py[cod]
 *.egg-info/
+.venv/
 dist/
+build/
+
+# Test, lint and coverage caches
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Kubernetes end-to-end scratch output (kubeconfigs, tokens): see tests/env/k8s/setup.sh
+tests/**/.out/
+
+# Local AI assistant tooling and memory: machine-specific, not needed to build or run the project.
+# (Shared project instructions such as CLAUDE.md / AGENTS.md are not ignored.)
+.serena/
 .swarm/
 .claude-flow/
+.claude/settings.local.json
+CLAUDE.local.md
+.cursor/
+.windsurf/
+.aider*
+.continue/
 
-# Kubernetes e2e scratch output (kubeconfigs, tokens)
-tests/k8s/.out/
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets and machine-specific configuration; commit *.example files instead
+.env
+.env.*
+!.env.example
+*.kubeconfig
+clusters.yaml
+clusters.yml
+
+# Release note drafts
+release-notes-*.md
