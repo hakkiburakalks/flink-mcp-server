@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -10,6 +10,9 @@ import yaml
 
 from .client import FlinkClient
 from .kube import KubeClient, KubeError, KubeSettings, load_kubeconfig
+from .prometheus import (
+    LABEL_NAME, METRIC_NAME, PromClient, PromError, PromSettings, PromTarget, parse_duration,
+)
 
 DEFAULT_URL = "http://localhost:8081"
 
@@ -28,6 +31,7 @@ class ClusterConfig:
     insecure: bool = False
     timeout: float = 10.0
     via_kube: bool = False  # discovered from Kubernetes; reached with the kubeconfig credentials
+    prometheus: Mapping[str, Any] | None = field(default=None, compare=False)  # per-cluster overrides
 
     def resolve_token(self, env: Mapping[str, str]) -> str | None:
         if self.token_env:
@@ -54,6 +58,7 @@ def load_clusters(env: Mapping[str, str] = os.environ) -> tuple[dict[str, Cluste
             "default",
             env.get("FLINK_REST_URL", DEFAULT_URL),
             token=env.get("FLINK_REST_TOKEN"),
+            prometheus={"selector": env["PROMETHEUS_SELECTOR"]} if env.get("PROMETHEUS_SELECTOR") else None,
         )
         return {"default": cfg}, "default"
     return parse_clusters(_read_clusters_file(path))
@@ -104,6 +109,132 @@ def load_kube_settings(env: Mapping[str, str] = os.environ) -> KubeSettings | No
     )
 
 
+PROM_CONNECTION_KEYS = {
+    "url", "token", "token_env", "ca_cert", "insecure", "timeout",
+    "job_id_label", "job_name_label", "task_label", "metrics",
+}
+PROM_GLOBAL_KEYS = PROM_CONNECTION_KEYS | {"max_range", "max_points", "max_series", "discovered_selector"}
+PROM_CLUSTER_KEYS = PROM_CONNECTION_KEYS | {"selector"}
+
+
+@dataclass(frozen=True)
+class PrometheusConfig:
+    base: Mapping[str, Any]  # the global `prometheus:` section (or PROMETHEUS_* variables)
+    discovered_selector: tuple[tuple[str, str], ...] | None = None  # for Kubernetes-discovered clusters
+
+
+def _selector(value: Any, where: str) -> tuple[tuple[str, str], ...]:
+    """Label matchers from a mapping, or from 'k=v,k2=v2' (environment variables)."""
+    if isinstance(value, str):
+        try:
+            value = dict(part.split("=", 1) for part in value.split(",") if part.strip())
+        except ValueError as e:
+            raise ConfigError(f"{where} must look like label=value,label2=value2") from e
+        value = {k.strip(): v.strip() for k, v in value.items()}
+    if not isinstance(value, Mapping):
+        raise ConfigError(f"{where} must be a mapping of label names to values")
+    for name, v in value.items():
+        if not LABEL_NAME.match(str(name)):
+            raise ConfigError(f"{where}: '{name}' is not a valid label name")
+        if not isinstance(v, (str, int)) or isinstance(v, bool):
+            raise ConfigError(f"{where}: the value for '{name}' must be a string")
+    return tuple((str(k), str(v)) for k, v in value.items())
+
+
+def load_prometheus_config(env: Mapping[str, str] = os.environ) -> PrometheusConfig | None:
+    """Optional Prometheus settings: the clusters file's `prometheus:` section or PROMETHEUS_* variables."""
+    path = env.get("FLINK_CLUSTERS_FILE")
+    section: Mapping[str, Any] | None = None
+    if path:
+        doc = _read_clusters_file(path)
+        if isinstance(doc, dict) and doc.get("prometheus") is not None:
+            section = doc["prometheus"]
+            if not isinstance(section, dict):
+                raise ConfigError("'prometheus' must be a mapping")
+    elif env.get("PROMETHEUS_URL"):
+        section = {
+            "url": env["PROMETHEUS_URL"],
+            "token": env.get("PROMETHEUS_TOKEN"),
+            "ca_cert": env.get("PROMETHEUS_CA_CERT"),
+            "insecure": _truthy(env.get("PROMETHEUS_INSECURE")),
+            "job_id_label": env.get("PROMETHEUS_JOB_ID_LABEL") or "job_id",
+            "discovered_selector": env.get("PROMETHEUS_DISCOVERED_SELECTOR"),
+        }
+        if env.get("PROMETHEUS_TIMEOUT"):
+            section["timeout"] = env["PROMETHEUS_TIMEOUT"]
+    if section is None:
+        return None
+    unknown = set(section) - PROM_GLOBAL_KEYS
+    if unknown:
+        raise ConfigError(f"Unknown prometheus setting(s): {', '.join(sorted(unknown))}")
+    discovered = section.get("discovered_selector")
+    template = None
+    if discovered:
+        template = _selector(discovered, "prometheus.discovered_selector")
+        try:
+            for _, v in template:
+                v.format(namespace="x", name="y")
+        except (KeyError, IndexError, ValueError) as e:
+            raise ConfigError(
+                "prometheus.discovered_selector may only use the placeholders {namespace} and {name}"
+            ) from e
+    return PrometheusConfig({k: v for k, v in section.items() if k != "discovered_selector"}, template)
+
+
+def _cluster_prometheus(name: str, value: Any) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError(f"Cluster '{name}': 'prometheus' must be a mapping")
+    unknown = set(value) - PROM_CLUSTER_KEYS
+    if unknown:
+        raise ConfigError(f"Cluster '{name}': unknown prometheus setting(s): {', '.join(sorted(unknown))}")
+    if "selector" in value:
+        _selector(value["selector"], f"Cluster '{name}': prometheus.selector")
+    return value
+
+
+def build_prom_settings(base: Mapping[str, Any], override: Mapping[str, Any] | None, where: str) -> PromSettings:
+    merged = {**base, **{k: v for k, v in (override or {}).items() if k != "selector"}}
+    if not merged.get("url"):
+        raise ConfigError(f"{where}: Prometheus needs a 'url' (set prometheus.url or PROMETHEUS_URL)")
+    metrics = merged.get("metrics") or {}
+    if not isinstance(metrics, Mapping):
+        raise ConfigError(f"{where}: 'metrics' must map names (restarts, ...) to Prometheus metric names")
+    from .trends import DEFAULT_METRICS
+
+    for key, name in metrics.items():
+        if key not in DEFAULT_METRICS:
+            raise ConfigError(f"{where}: unknown metric key '{key}'; use one of {', '.join(DEFAULT_METRICS)}")
+        if not METRIC_NAME.match(str(name)):
+            raise ConfigError(f"{where}: '{name}' is not a valid metric name")
+    labels = {k: merged[k] for k in ("job_id_label", "task_label") if merged.get(k)}
+    for key, value in {**labels, "job_name_label": merged.get("job_name_label")}.items():
+        if value and not LABEL_NAME.match(str(value)):
+            raise ConfigError(f"{where}: {key} '{value}' is not a valid label name")
+    try:
+        numeric = {
+            "timeout": float(merged.get("timeout", 10.0)),
+            **{k: int(merged[k]) for k in ("max_points", "max_series") if k in merged},
+            **({"max_range": parse_duration(merged["max_range"])} if "max_range" in merged else {}),
+        }
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"{where}: timeout, max_points and max_series must be numbers and max_range a duration like 7d") from e
+    if any(v <= 0 for v in numeric.values()):
+        raise ConfigError(f"{where}: timeout and max_* settings must be positive")
+    return PromSettings(
+        url=str(merged["url"]),
+        token=merged.get("token"),
+        token_env=merged.get("token_env"),
+        ca_cert=merged.get("ca_cert"),
+        insecure=bool(merged.get("insecure", False)),
+        job_name_label=(merged["job_name_label"] or None) if "job_name_label" in merged else "job_name",
+        metrics=tuple((str(k), str(v)) for k, v in metrics.items()),
+        **labels,
+        **numeric,
+    )
+
+
 def parse_clusters(doc: Any) -> tuple[dict[str, ClusterConfig], str]:
     has_kube = isinstance(doc, dict) and "kubernetes" in doc
     raw = (doc or {}).get("clusters") if isinstance(doc, dict) else None
@@ -123,6 +254,7 @@ def parse_clusters(doc: Any) -> tuple[dict[str, ClusterConfig], str]:
             ca_cert=entry.get("ca_cert"),
             insecure=bool(entry.get("insecure", False)),
             timeout=float(entry.get("timeout", 10.0)),
+            prometheus=_cluster_prometheus(str(name), entry.get("prometheus")),
         )
     default = str(doc.get("default") or next(iter(clusters)))
     if default not in clusters:
@@ -141,7 +273,10 @@ class ClusterRegistry:
         kube: KubeSettings | None = None,
         kube_client: KubeClient | None = None,
         discovery_ttl: float = 60.0,
+        prometheus: PrometheusConfig | None = None,
     ) -> None:
+        self.prometheus = prometheus
+        self._prom_clients: dict[tuple, PromClient] = {}
         self._static = dict(clusters)
         self.clusters = dict(clusters)
         self.default = default
@@ -212,6 +347,53 @@ class ClusterRegistry:
             raise ConfigError(f"Unknown cluster '{name}'. Available: {', '.join(self.clusters) or 'none'}{hint}")
         return name
 
+    def prometheus_configured(self) -> bool:
+        """True when some Prometheus URL is set: globally or on a cluster."""
+        if self.prometheus and self.prometheus.base.get("url"):
+            return True
+        return any((c.prometheus or {}).get("url") for c in self.clusters.values())
+
+    def prometheus_target(self, name: str | None = None) -> PromTarget:
+        """The Prometheus for a cluster and how to tell that cluster's series from the others'.
+
+        A cluster is "scoped" when its series can be selected without catching another Flink
+        cluster's: an explicit `prometheus.selector`, a `discovered_selector` template for
+        Kubernetes clusters, or being the only Flink cluster there is. Anything else is not
+        scoped, and the trend analysis then refuses to guess.
+        """
+        resolved = self._resolve(name)
+        cfg = self.clusters[resolved]
+        base = self.prometheus.base if self.prometheus else {}
+        override = cfg.prometheus or {}
+        settings = build_prom_settings(base, override, f"Cluster '{resolved}'")
+        scoped, reason = True, None
+        if "selector" in override:
+            selector = _selector(override["selector"], f"Cluster '{resolved}': prometheus.selector")
+        elif cfg.via_kube and self.prometheus and self.prometheus.discovered_selector:
+            namespace, _, deployment = resolved.partition("/")
+            selector = tuple(
+                (k, v.format(namespace=namespace, name=deployment))
+                for k, v in self.prometheus.discovered_selector
+            )
+        elif len(self.clusters) <= 1:
+            selector = ()
+        else:
+            selector, scoped = (), False
+            reason = (
+                f"{len(self.clusters)} Flink clusters are configured and '{resolved}' has no "
+                "prometheus.selector (or prometheus.discovered_selector for Kubernetes clusters), so its "
+                "series cannot be told apart from the other clusters'. Add label matchers that identify it."
+            )
+        settings = replace(settings, selector=selector)
+        key = (settings.url, settings.token, settings.token_env, settings.ca_cert, settings.insecure,
+               settings.timeout, settings.max_range, settings.max_points, settings.max_series)
+        if key not in self._prom_clients:
+            try:
+                self._prom_clients[key] = PromClient(settings, self._env)
+            except PromError as e:
+                raise ConfigError(str(e)) from e
+        return PromTarget(self._prom_clients[key], settings, selector, scoped, reason)
+
     def kube_target(self, name: str | None = None) -> tuple[str, str] | None:
         """(namespace, deployment) when the cluster was discovered from Kubernetes, else None."""
         cfg = self.clusters[self._resolve(name)]
@@ -239,3 +421,13 @@ class ClusterRegistry:
                     verify=False if cfg.insecure else (cfg.ca_cert or True),
                 )
         return self._clients[name]
+
+    async def aclose(self) -> None:
+        """Close every HTTP client the registry opened."""
+        clients = [*self._clients.values(), *self._prom_clients.values()]
+        if self._kube_client is not None:
+            clients.append(self._kube_client)
+        for client in clients:
+            await client.aclose()
+        self._clients.clear()
+        self._prom_clients.clear()

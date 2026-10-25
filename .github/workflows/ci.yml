@@ -38,6 +38,11 @@ jobs:
           done
           docker compose -f tests/docker-compose.yml logs
           exit 1
+      - name: Wait for Prometheus and submit a job
+        run: |
+          for i in $(seq 1 30); do curl -sf http://localhost:9090/-/ready && break; sleep 2; done
+          docker compose -f tests/docker-compose.yml exec -T jobmanager \
+            flink run -d /opt/flink/examples/streaming/StateMachineExample.jar
       - run: uv run pytest -m integration
       - if: always()
         run: docker compose -f tests/docker-compose.yml down

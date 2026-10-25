@@ -6,6 +6,12 @@ default: local
 #   namespaces: [flink]
 #   access: proxy
 
+# Optional: Prometheus trends in diagnose_job and the prometheus_query tools. See the README.
+# prometheus:
+#   url: http://prometheus:9090
+#   token_env: PROMETHEUS_TOKEN
+#   discovered_selector: {namespace: "{namespace}", deployment: "{name}"}   # Kubernetes clusters
+
 clusters:
   local:
     url: http://localhost:8081
@@ -17,3 +23,7 @@ clusters:
   staging:
     url: http://flink-staging:8081
     insecure: false
+  # With several clusters, tell Prometheus' series apart per cluster:
+  # prod:
+  #   url: ...
+  #   prometheus: {selector: {cluster: prod}}

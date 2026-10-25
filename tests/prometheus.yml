@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: flink
+    static_configs:
+      - targets: ["jobmanager:9249", "taskmanager:9249"]
