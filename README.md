@@ -16,7 +16,11 @@ Tool output is summarized for LLMs rather than returning raw REST JSON.
 | `backpressure` | Per-vertex backpressured/busy/idle ms per second |
 | `taskmanagers` | Slots and resources per TaskManager |
 | `job_config` | Job execution config |
+| `list_clusters` | Configured clusters (names and URLs only) |
+| `fleet_overview` | Overview of all clusters in one call; unreachable ones report an error |
 | `diagnose_job` | One-call verdict (`healthy`/`degraded`/`critical`) with ranked findings from state, tasks, exceptions, checkpoints and backpressure |
+
+All per-cluster tools take an optional `cluster` argument; omit it for the default cluster.
 
 ## Configuration
 
@@ -24,6 +28,11 @@ Tool output is summarized for LLMs rather than returning raw REST JSON.
 | --- | --- | --- |
 | `FLINK_REST_URL` | `http://localhost:8081` | JobManager REST endpoint |
 | `FLINK_REST_TOKEN` | unset | Sent as `Authorization: Bearer ...` |
+| `FLINK_CLUSTERS_FILE` | unset | YAML with several clusters (overrides the two above) |
+
+Multiple clusters: copy `clusters.example.yaml`, then set `FLINK_CLUSTERS_FILE`.
+Per cluster: `url`, `token` or `token_env` (preferred, keeps secrets out of the file),
+`ca_cert`, `insecure`, `timeout`.
 
 ## Run
 
@@ -48,5 +57,5 @@ uv run pytest -m integration       # needs the local cluster
 
 ## Roadmap
 
-V2 multi-cluster + Streamable HTTP + auth/TLS, V3 diagnostics (Prometheus, logs),
+V2 (multi-cluster, token and TLS options: done) Streamable HTTP + Kubernetes discovery, V3 diagnostics (Prometheus, logs),
 V4 approval-gated operations and SQL Gateway.

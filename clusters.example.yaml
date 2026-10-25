@@ -1,0 +1,13 @@
+# Point FLINK_CLUSTERS_FILE at a copy of this file.
+default: local
+clusters:
+  local:
+    url: http://localhost:8081
+  prod:
+    url: https://flink-prod.example.com:8081
+    token_env: FLINK_PROD_TOKEN   # read from this env var; avoids secrets in the file
+    ca_cert: /etc/ssl/certs/corp-ca.pem
+    timeout: 15
+  staging:
+    url: http://flink-staging:8081
+    insecure: false

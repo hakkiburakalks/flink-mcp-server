@@ -1,68 +1,102 @@
 from __future__ import annotations
 
-import os
+import asyncio
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from . import summaries
 from .client import FlinkClient
+from .config import ClusterRegistry, load_clusters
 
 mcp = FastMCP("flink")
 
-_client: FlinkClient | None = None
+_registry: ClusterRegistry | None = None
 
 
-def get_client() -> FlinkClient:
-    global _client
-    if _client is None:
-        headers = {}
-        if token := os.environ.get("FLINK_REST_TOKEN"):
-            headers["Authorization"] = f"Bearer {token}"
-        _client = FlinkClient(
-            os.environ.get("FLINK_REST_URL", "http://localhost:8081"), headers=headers
-        )
-    return _client
+def get_registry() -> ClusterRegistry:
+    global _registry
+    if _registry is None:
+        clusters, default = load_clusters()
+        _registry = ClusterRegistry(clusters, default)
+    return _registry
+
+
+def get_client(cluster: str | None = None) -> FlinkClient:
+    return get_registry().client(cluster)
+
+
+# Every tool takes an optional `cluster`; omit it to use the default cluster.
 
 
 @mcp.tool()
-async def cluster_overview() -> dict[str, Any]:
+async def list_clusters() -> list[dict[str, Any]]:
+    """Configured Flink clusters (names and URLs, never credentials)."""
+    reg = get_registry()
+    return [
+        {"name": c.name, "url": c.url, "default": c.name == reg.default}
+        for c in reg.clusters.values()
+    ]
+
+
+@mcp.tool()
+async def fleet_overview() -> dict[str, Any]:
+    """Overview of every configured cluster in one call; unreachable clusters
+    are reported with an error instead of failing the whole call."""
+    reg = get_registry()
+
+    async def one(name: str) -> dict[str, Any]:
+        try:
+            return summaries.summarize_cluster(await reg.client(name).overview())
+        except Exception as e:  # report per cluster, keep the rest
+            return {"error": f"{type(e).__name__}: {e}"}
+
+    names = reg.names()
+    return dict(zip(names, await asyncio.gather(*(one(n) for n in names))))
+
+
+@mcp.tool()
+async def cluster_overview(cluster: str | None = None) -> dict[str, Any]:
     """Flink version, TaskManager/slot counts and job counts by state."""
-    return summaries.summarize_cluster(await get_client().overview())
+    return summaries.summarize_cluster(await get_client(cluster).overview())
 
 
 @mcp.tool()
-async def list_jobs() -> list[dict[str, Any]]:
+async def list_jobs(cluster: str | None = None) -> list[dict[str, Any]]:
     """All jobs (running and recently finished) with state and duration."""
-    return summaries.summarize_jobs(await get_client().jobs_overview())
+    return summaries.summarize_jobs(await get_client(cluster).jobs_overview())
 
 
 @mcp.tool()
-async def job_details(job_id: str) -> dict[str, Any]:
+async def job_details(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """State and per-vertex status/parallelism of one job."""
-    return summaries.summarize_job(await get_client().job(job_id))
+    return summaries.summarize_job(await get_client(cluster).job(job_id))
 
 
 @mcp.tool()
-async def job_exceptions(job_id: str, limit: int = 5) -> dict[str, Any]:
+async def job_exceptions(
+    job_id: str, limit: int = 5, cluster: str | None = None
+) -> dict[str, Any]:
     """Root exception and the most recent entries of the job's exception history."""
-    return summaries.summarize_exceptions(await get_client().job_exceptions(job_id), limit)
+    return summaries.summarize_exceptions(await get_client(cluster).job_exceptions(job_id), limit)
 
 
 @mcp.tool()
-async def checkpoint_stats(job_id: str) -> dict[str, Any]:
+async def checkpoint_stats(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Checkpoint counts, failure rate, last completed/failed checkpoint."""
-    return summaries.summarize_checkpoints(await get_client().job_checkpoints(job_id))
+    return summaries.summarize_checkpoints(await get_client(cluster).job_checkpoints(job_id))
 
 
 @mcp.tool()
-async def backpressure(job_id: str) -> list[dict[str, Any]]:
+async def backpressure(job_id: str, cluster: str | None = None) -> list[dict[str, Any]]:
     """Per-vertex backpressure (avg ms/s backpressured, busy, idle) for a job."""
-    return await _backpressure(job_id, await get_client().job(job_id))
+    client = get_client(cluster)
+    return await _backpressure(client, job_id, await client.job(job_id))
 
 
-async def _backpressure(job_id: str, raw_job: dict[str, Any]) -> list[dict[str, Any]]:
-    client = get_client()
+async def _backpressure(
+    client: FlinkClient, job_id: str, raw_job: dict[str, Any]
+) -> list[dict[str, Any]]:
     result = []
     for v in raw_job.get("vertices", []):
         metrics = await client.vertex_subtask_metrics(
@@ -73,30 +107,30 @@ async def _backpressure(job_id: str, raw_job: dict[str, Any]) -> list[dict[str, 
 
 
 @mcp.tool()
-async def diagnose_job(job_id: str) -> dict[str, Any]:
+async def diagnose_job(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """One-call health verdict for a job: combines state, task status, exceptions,
     checkpoints and backpressure into ranked findings. Start here when asked
     "why is this job unhealthy/slow?"."""
-    client = get_client()
+    client = get_client(cluster)
     raw_job = await client.job(job_id)
     return summaries.diagnose(
         summaries.summarize_job(raw_job),
         summaries.summarize_exceptions(await client.job_exceptions(job_id)),
         summaries.summarize_checkpoints(await client.job_checkpoints(job_id)),
-        await _backpressure(job_id, raw_job),
+        await _backpressure(client, job_id, raw_job),
     )
 
 
 @mcp.tool()
-async def taskmanagers() -> list[dict[str, Any]]:
+async def taskmanagers(cluster: str | None = None) -> list[dict[str, Any]]:
     """TaskManagers with slot usage and resources."""
-    return summaries.summarize_taskmanagers(await get_client().taskmanagers())
+    return summaries.summarize_taskmanagers(await get_client(cluster).taskmanagers())
 
 
 @mcp.tool()
-async def job_config(job_id: str) -> dict[str, Any]:
+async def job_config(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Execution configuration of a job."""
-    return await get_client().job_config(job_id)
+    return await get_client(cluster).job_config(job_id)
 
 
 def main() -> None:

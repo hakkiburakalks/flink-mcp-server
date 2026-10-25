@@ -5,6 +5,10 @@ from typing import Any
 import httpx
 
 
+class FlinkConnectionError(Exception):
+    pass
+
+
 class FlinkClient:
     """Thin async wrapper around the Flink JobManager REST API (read-only)."""
 
@@ -14,16 +18,24 @@ class FlinkClient:
         timeout: float = 10.0,
         headers: dict[str, str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        verify: bool | str = True,
     ) -> None:
         self._http = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=timeout,
             headers=headers,
             transport=transport,
+            verify=verify,
         )
 
     async def get(self, path: str, **params: Any) -> Any:
-        resp = await self._http.get(path, params=params or None)
+        try:
+            resp = await self._http.get(path, params=params or None)
+        except httpx.RequestError as e:
+            # httpx timeouts often carry an empty message; say what was unreachable.
+            raise FlinkConnectionError(
+                f"Cannot reach Flink at {self._http.base_url}: {type(e).__name__} {e}".rstrip()
+            ) from e
         resp.raise_for_status()
         return resp.json()
 
