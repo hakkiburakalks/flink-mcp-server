@@ -63,5 +63,5 @@ jobs:
         shell: powershell
         run: |
           .\install.ps1
-          & "$env:USERPROFILE\.localinlink-mcp-server.exe" --version
+          & "$env:USERPROFILE\.local\bin\flink-mcp-server.exe" --version
           .\install.ps1 -Uninstall
