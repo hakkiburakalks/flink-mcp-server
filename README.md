@@ -101,6 +101,16 @@ Claude Desktop, Cursor and others (`mcpServers` in their JSON config):
 
 From a checkout: `uv sync --extra dev && uv run flink-mcp-server`.
 
+Optional: run the latest `main` straight from git instead of the PyPI release
+(for `uvx` and the installers; unreleased changes may be unstable):
+
+```
+uvx --from git+https://github.com/hakkiburakalks/flink-mcp-server flink-mcp-server
+FLINK_MCP_SOURCE=git+https://github.com/hakkiburakalks/flink-mcp-server sh install.sh
+```
+
+Pin a release or branch with `@v0.1.0` / `@main` after the URL.
+
 ## Remote access (Streamable HTTP)
 
 ```
