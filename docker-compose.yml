@@ -1,0 +1,20 @@
+services:
+  jobmanager:
+    image: flink:1.20
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        execution.checkpointing.interval: 5s
+
+  taskmanager:
+    image: flink:1.20
+    command: taskmanager
+    depends_on:
+      - jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 4

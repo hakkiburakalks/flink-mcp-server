@@ -1,0 +1,8 @@
+.venv/
+.git/
+.swarm/
+.claude-flow/
+.github/
+tests/
+__pycache__/
+*.egg-info/
