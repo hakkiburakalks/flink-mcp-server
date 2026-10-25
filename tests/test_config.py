@@ -75,3 +75,20 @@ async def test_fleet_overview_isolates_failures(monkeypatch):
     assert out["ok"]["taskmanagers"] == 2
     assert "Cannot reach Flink at http://down" in out["down"]["error"]
     assert "ConnectError" in out["down"]["error"]
+
+
+async def test_backpressure_skips_metrics_for_finished_jobs(monkeypatch):
+    clusters, default = parse_clusters({"clusters": {"a": {"url": "http://a"}}})
+    reg = ClusterRegistry(clusters, default, env={})
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"state": "FINISHED", "vertices": [{"id": "v1", "name": "map"}]})
+
+    reg.client()._http._transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(server, "_registry", reg)
+
+    out = await server.backpressure("job1")
+    assert out[0]["level"] == "unknown"
+    assert seen == ["/jobs/job1"]  # no vertex metrics requested

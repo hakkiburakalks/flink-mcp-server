@@ -100,13 +100,19 @@ async def backpressure(job_id: str, cluster: str | None = None) -> list[dict[str
 async def _backpressure(
     client: FlinkClient, job_id: str, raw_job: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    result = []
-    for v in raw_job.get("vertices", []):
-        metrics = await client.vertex_subtask_metrics(
-            job_id, v["id"], summaries.BACKPRESSURE_METRICS
+    vertices = raw_job.get("vertices", [])
+    # Only running jobs have live metrics; asking a finished job would just wait for nothing.
+    if raw_job.get("state") != "RUNNING":
+        return [summaries.summarize_backpressure(v.get("name"), v["id"], []) for v in vertices]
+    metrics = await asyncio.gather(
+        *(
+            client.vertex_subtask_metrics(job_id, v["id"], summaries.BACKPRESSURE_METRICS)
+            for v in vertices
         )
-        result.append(summaries.summarize_backpressure(v.get("name"), v["id"], metrics))
-    return result
+    )
+    return [
+        summaries.summarize_backpressure(v.get("name"), v["id"], m) for v, m in zip(vertices, metrics)
+    ]
 
 
 @mcp.tool()
@@ -139,7 +145,7 @@ async def job_metrics(
 ) -> dict[str, Any]:
     """Job-level metrics. Give `names` to read values; omit it to list the available
     metric ids (narrow them with `search`, e.g. "checkpoint"). Flink fetches metrics lazily,
-    so the very first call after a job starts can come back empty; retry after a few seconds."""
+    so right after a job starts the first answer can take a couple of seconds."""
     raw = await get_client(cluster).job_metrics(job_id, names)
     return summaries.summarize_metrics(raw, search)
 

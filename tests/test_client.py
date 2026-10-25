@@ -23,7 +23,7 @@ async def test_overview_hits_expected_path():
 async def test_subtask_metrics_query_param():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["get"] == "a,b"
-        return httpx.Response(200, json=[])
+        return httpx.Response(200, json=[{"id": "a", "avg": 1.0}])
 
     await make_client(handler).vertex_subtask_metrics("j", "v", ["a", "b"])
 
@@ -49,3 +49,47 @@ async def test_non_json_error_body_is_tolerated():
     client = make_client(lambda r: httpx.Response(502, text="<html>bad gateway</html>"))
     with pytest.raises(FlinkHTTPError, match="502 Bad Gateway for /overview."):
         await client.overview()
+
+
+def make_retry_client(handler, retries=3):
+    return FlinkClient(
+        "http://flink:8081",
+        transport=httpx.MockTransport(handler),
+        metrics_retries=retries,
+        metrics_retry_delay=0,
+    )
+
+
+async def test_metrics_retry_until_flink_has_data():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        data = [] if len(calls) < 3 else [{"id": "busyTimeMsPerSecond", "avg": 5.0}]
+        return httpx.Response(200, json=data)
+
+    out = await make_retry_client(handler).vertex_subtask_metrics("j", "v", ["busyTimeMsPerSecond"])
+    assert out == [{"id": "busyTimeMsPerSecond", "avg": 5.0}]
+    assert len(calls) == 3
+
+
+async def test_metrics_retry_gives_up_with_empty_result():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(200, json=[])
+
+    assert await make_retry_client(handler, retries=2).job_metrics("j") == []
+    assert len(calls) == 3  # first try + 2 retries
+
+
+async def test_non_metric_endpoints_do_not_retry():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(200, json=[])
+
+    await make_retry_client(handler).taskmanagers()
+    assert len(calls) == 1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -39,7 +40,11 @@ class FlinkClient:
         headers: dict[str, str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         verify: bool | str = True,
+        metrics_retries: int = 3,
+        metrics_retry_delay: float = 1.0,
     ) -> None:
+        self.metrics_retries = metrics_retries
+        self.metrics_retry_delay = metrics_retry_delay
         self._http = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=timeout,
@@ -78,16 +83,28 @@ class FlinkClient:
     async def job_checkpoints(self, job_id: str) -> Any:
         return await self.get(f"/jobs/{job_id}/checkpoints")
 
+    async def _get_metrics(self, path: str, **params: Any) -> Any:
+        """GET a metrics endpoint, retrying while Flink answers with an empty list.
+
+        Flink fills its metric cache lazily: the first request after a job starts
+        triggers the fetch and returns [], and the data shows up a moment later.
+        """
+        for attempt in range(self.metrics_retries + 1):
+            result = await self.get(path, **params)
+            if result or attempt == self.metrics_retries:
+                return result
+            await asyncio.sleep(self.metrics_retry_delay)
+
     async def vertex_subtask_metrics(self, job_id: str, vertex_id: str, names: list[str]) -> Any:
-        return await self.get(
+        return await self._get_metrics(
             f"/jobs/{job_id}/vertices/{vertex_id}/subtasks/metrics", get=",".join(names)
         )
 
     async def job_metrics(self, job_id: str, names: list[str] | None = None) -> Any:
         # Without `get`, Flink lists the available metric ids instead of values.
         if names:
-            return await self.get(f"/jobs/{job_id}/metrics", get=",".join(names))
-        return await self.get(f"/jobs/{job_id}/metrics")
+            return await self._get_metrics(f"/jobs/{job_id}/metrics", get=",".join(names))
+        return await self._get_metrics(f"/jobs/{job_id}/metrics")
 
     async def jars(self) -> Any:
         return await self.get("/jars")
