@@ -224,7 +224,7 @@ def _number(value: str) -> float | int | str:
     return int(f) if f.is_integer() else f
 
 
-_SEVERITY_ORDER ={"info": 0, "warning": 1, "critical": 2}
+SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
 _VERDICT = {0: "healthy", 1: "degraded", 2: "critical"}
 
 
@@ -317,8 +317,8 @@ def diagnose(
     ):
         add("info", "backpressure", "Backpressure was not assessed: Flink returned no usable metrics for any vertex.")
 
-    findings.sort(key=lambda f: -_SEVERITY_ORDER[f["severity"]])
-    worst = max((_SEVERITY_ORDER[f["severity"]] for f in findings), default=0)
+    findings.sort(key=lambda f: -SEVERITY_RANK[f["severity"]])
+    worst = max((SEVERITY_RANK[f["severity"]] for f in findings), default=0)
     if not findings:
         add("info", "job", "No problems detected.")
     return {"verdict": _VERDICT[worst], "state": state, "findings": findings}

@@ -15,6 +15,7 @@ from typing import Any
 from .prometheus import (
     PromError, PromTarget, format_duration, matchers,
 )
+from .summaries import SEVERITY_RANK
 
 DEFAULT_METRICS = {
     "restarts": "flink_jobmanager_job_numRestarts",
@@ -78,7 +79,7 @@ def job_names(series_list: list[dict[str, Any]], label: str | None) -> set[str]:
 
 
 def analyze_cumulative(
-    key: str, name: str, mtype: str | None, series_list: list[dict[str, Any]], window: str
+    name: str, mtype: str | None, series_list: list[dict[str, Any]], window: str
 ) -> dict[str, Any]:
     """Increase of one cumulative metric, summed over its series, with resets accounted for."""
     per_series = [points(s) for s in series_list]
@@ -228,7 +229,7 @@ async def _one(
     """Run one metric's query. Returns (key, shaped result or error, metric type)."""
     client = target.client
     mtype, shaped = await asyncio.gather(
-        client.metric_type(name), _range(client, expr, start, end, step), return_exceptions=True
+        client.metric_type(name), client.query_range(expr, start, end, step), return_exceptions=True
     )
     if isinstance(mtype, BaseException):
         mtype = None
@@ -237,10 +238,6 @@ async def _one(
     if isinstance(shaped, BaseException):
         raise shaped
     return key, shaped, mtype
-
-
-async def _range(client: Any, expr: str, start: float, end: float, step: float) -> dict[str, Any]:
-    return await client.query_range(expr, start, end, step)
 
 
 async def collect_history(
@@ -306,7 +303,7 @@ async def collect_history(
     findings: list[dict[str, Any]] = []
     for key in ("restarts", "failed_checkpoints", "completed_checkpoints"):
         if key in series:
-            checks[key] = analyze_cumulative(key, names[key], types[key], series[key], window_text)
+            checks[key] = analyze_cumulative(names[key], types[key], series[key], window_text)
     if "restarts" in series and (f := restart_finding(checks["restarts"], window_text)):
         findings.append(f)
     if "failed_checkpoints" in series and (
@@ -370,8 +367,7 @@ def apply_history(result: dict[str, Any], history: dict[str, Any]) -> dict[str, 
         }.get(status, status)
         findings.append({"severity": "info", "area": "history",
                          "message": f"No trend analysis: {reason}. See `history` for details."})
-    order = {"info": 0, "warning": 1, "critical": 2}
-    findings.sort(key=lambda f: -order[f["severity"]])
+    findings.sort(key=lambda f: -SEVERITY_RANK[f["severity"]])
     verdict = result["verdict"]
     if warnings and verdict == "healthy":
         verdict = "degraded"

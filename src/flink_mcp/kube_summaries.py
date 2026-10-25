@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .summaries import SEVERITY_RANK
+
 MAX_ERROR_CHARS = 600
 # Container/pod reasons that mean the pod will not recover on its own.
 FATAL_REASONS = {
@@ -16,7 +18,6 @@ FATAL_REASONS = {
     "InvalidImageName",
     "OOMKilled",
 }
-_RANK = {"info": 0, "warning": 1, "critical": 2}
 _VERDICT = {0: "healthy", 1: "degraded", 2: "critical"}
 
 
@@ -135,8 +136,8 @@ def deployment_health(dep: dict[str, Any], pods: list[dict[str, Any]]) -> dict[s
     if not pods and jm not in (None, "MISSING"):
         add("warning", "pods", "No pods found for this deployment (label app=<name>).")
 
-    findings.sort(key=lambda f: -_RANK[f["severity"]])
-    worst = max((_RANK[f["severity"]] for f in findings), default=0)
+    findings.sort(key=lambda f: -SEVERITY_RANK[f["severity"]])
+    worst = max((SEVERITY_RANK[f["severity"]] for f in findings), default=0)
     if not findings:
         add("info", "deployment", "No problems detected at the Kubernetes/operator level.")
     return {

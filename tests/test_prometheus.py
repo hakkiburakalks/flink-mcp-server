@@ -220,15 +220,15 @@ def test_counter_increase_accounts_for_resets():
 
 
 def test_cumulative_needs_two_samples():
-    out = trends.analyze_cumulative("restarts", RESTARTS, "gauge", [shaped([3])], "1h")
+    out = trends.analyze_cumulative(RESTARTS, "gauge", [shaped([3])], "1h")
     assert out["status"] == "insufficient_samples"
-    out = trends.analyze_cumulative("restarts", RESTARTS, None, [], "1h")
+    out = trends.analyze_cumulative(RESTARTS, None, [], "1h")
     assert out["status"] == "insufficient_samples" and out["type"] == "unknown"
 
 
 def test_restart_findings_scale_with_count():
     def finding(values):
-        check = trends.analyze_cumulative("restarts", RESTARTS, "gauge", [shaped(values)], "1h")
+        check = trends.analyze_cumulative(RESTARTS, "gauge", [shaped(values)], "1h")
         return trends.restart_finding(check, "1h")
 
     assert finding([2] * 10) is None
@@ -237,13 +237,13 @@ def test_restart_findings_scale_with_count():
 
 
 def test_checkpoint_failures_report_the_share_of_finished_checkpoints():
-    failed = trends.analyze_cumulative("f", FAILED, "gauge", [shaped([0, 5, 10])], "1h")
-    done = trends.analyze_cumulative("c", COMPLETED, "gauge", [shaped([0, 20, 40])], "1h")
+    failed = trends.analyze_cumulative(FAILED, "gauge", [shaped([0, 5, 10])], "1h")
+    done = trends.analyze_cumulative(COMPLETED, "gauge", [shaped([0, 20, 40])], "1h")
     f = trends.checkpoint_failure_finding(failed, done, "1h")
     assert f["severity"] == "warning" and "20% of finished checkpoints failed" in f["observation"]
     assert trends.checkpoint_failure_finding(failed, None, "1h")["severity"] == "warning"  # 10 failures
-    few = trends.analyze_cumulative("f", FAILED, "gauge", [shaped([0, 1, 1])], "1h")
-    lots = trends.analyze_cumulative("c", COMPLETED, "gauge", [shaped([0, 500, 1000])], "1h")
+    few = trends.analyze_cumulative(FAILED, "gauge", [shaped([0, 1, 1])], "1h")
+    lots = trends.analyze_cumulative(COMPLETED, "gauge", [shaped([0, 500, 1000])], "1h")
     assert trends.checkpoint_failure_finding(few, lots, "1h")["severity"] == "info"
 
 
