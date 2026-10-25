@@ -1,12 +1,12 @@
 # Point FLINK_CLUSTERS_FILE at a copy of this file.
 default: local
 # Optional: also discover FlinkDeployments (Flink Kubernetes Operator) as clusters
-# named <namespace>/<name>. Uses your kubeconfig; see the README.
+# named <namespace>/<name>. Uses your kubeconfig; see docs/kubernetes.md.
 # kubernetes:
 #   namespaces: [flink]
 #   access: proxy
 
-# Optional: Prometheus trends in diagnose_job and the prometheus_query tools. See the README.
+# Optional: Prometheus trends in diagnose_job and the prometheus_query tools. See docs/prometheus.md.
 # prometheus:
 #   url: http://prometheus:9090
 #   token_env: PROMETHEUS_TOKEN
