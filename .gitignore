@@ -5,3 +5,6 @@ dist/
 .pytest_cache/
 .swarm/
 .claude-flow/
+
+# Kubernetes e2e scratch output (kubeconfigs, tokens)
+tests/k8s/.out/

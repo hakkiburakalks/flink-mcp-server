@@ -1,0 +1,31 @@
+# "orders" is healthy; "broken" points at an image that does not exist.
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata: {name: orders, namespace: flink}
+spec:
+  image: flink:1.20
+  flinkVersion: v1_20
+  serviceAccount: flink
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "2"
+    execution.checkpointing.interval: "10s"
+  jobManager: {resource: {memory: "1024m", cpu: 0.5}}
+  taskManager: {resource: {memory: "1024m", cpu: 0.5}}
+  job:
+    jarURI: local:///opt/flink/examples/streaming/StateMachineExample.jar
+    parallelism: 1
+    upgradeMode: stateless
+---
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata: {name: broken, namespace: flink}
+spec:
+  image: flink:does-not-exist-9.9
+  flinkVersion: v1_20
+  serviceAccount: flink
+  jobManager: {resource: {memory: "1024m", cpu: 0.5}}
+  taskManager: {resource: {memory: "1024m", cpu: 0.5}}
+  job:
+    jarURI: local:///opt/flink/examples/streaming/StateMachineExample.jar
+    parallelism: 1
+    upgradeMode: stateless
