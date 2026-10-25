@@ -6,12 +6,20 @@
 [![License](https://img.shields.io/pypi/l/flink-mcp-server)](https://github.com/hakkiburakalks/flink-mcp-server/blob/main/LICENSE)
 
 A **read-only** [MCP](https://modelcontextprotocol.io) server that lets an AI assistant inspect and
-diagnose Apache Flink clusters. It only needs a reachable JobManager REST endpoint, so it works the
+diagnose [Apache Flink](https://flink.apache.org) clusters. It only needs a reachable JobManager
+[REST API](https://nightlies.apache.org/flink/flink-docs-stable/docs/ops/rest_api/), so it works the
 same on bare metal, Docker, Kubernetes or YARN, on Windows, macOS and Linux. Output is summarized
 for LLMs instead of returning raw REST JSON.
 
-> Community-maintained. Not an official Apache Flink project and not affiliated with the Apache
-> Software Foundation. Apache Flink is a trademark of the ASF.
+**What is Apache Flink?** [Apache Flink](https://flink.apache.org) is an open-source framework and
+distributed engine for stateful computations over data streams (and batches): streaming pipelines,
+event-driven applications and analytics that run continuously and must be monitored.
+See the [Flink documentation](https://nightlies.apache.org/flink/flink-docs-stable/) and the
+[Flink Kubernetes Operator](https://nightlies.apache.org/flink/flink-kubernetes-operator-docs-main/).
+
+> Community-maintained. Not an official Apache Flink project and not affiliated with or endorsed by
+> the Apache Software Foundation. Apache, Apache Flink and the Flink logo are trademarks of the
+> Apache Software Foundation.
 
 ## ✨ Features
 
