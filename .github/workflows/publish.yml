@@ -1,0 +1,40 @@
+name: Publish to PyPI
+
+# Runs when a GitHub release is published (tag like v0.1.0). Uses PyPI Trusted Publishing,
+# so no API token is stored in this repository.
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Tag must match the package version
+        run: |
+          version=$(uv run python -c "import flink_mcp; print(flink_mcp.__version__)")
+          if [ "v$version" != "${{ github.event.release.tag_name }}" ]; then
+            echo "Release tag ${{ github.event.release.tag_name }} does not match package version v$version" >&2
+            exit 1
+          fi
+      - run: uv build
+      - run: uvx twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -45,7 +45,7 @@ Per cluster: `url`, `token` or `token_env` (preferred, keeps secrets out of the 
 
 One-line installers. They install [uv](https://docs.astral.sh/uv/) first if it is missing,
 then the server. They download and run a script, so read it first if you prefer
-([install.sh](install.sh), [install.ps1](install.ps1)).
+([install.sh](https://github.com/hakkiburakalks/flink-mcp-server/blob/main/install.sh), [install.ps1](https://github.com/hakkiburakalks/flink-mcp-server/blob/main/install.ps1)).
 
 macOS / Linux:
 
