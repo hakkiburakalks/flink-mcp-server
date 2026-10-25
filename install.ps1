@@ -17,8 +17,8 @@ Also register the server in Claude Code (needs the `claude` CLI).
 .PARAMETER Uninstall
 Remove flink-mcp-server.
 
-Environment: FLINK_MCP_SOURCE overrides what is installed (a path or a git+ URL,
-e.g. git+https://github.com/hakkiburakalks/flink-mcp-server@v0.1.0).
+Environment: FLINK_MCP_SOURCE overrides what is installed (default: the release on PyPI;
+accepts a path or a git+ URL, e.g. git+https://github.com/hakkiburakalks/flink-mcp-server).
 #>
 param(
     [string]$Url = 'http://localhost:8081',
@@ -27,7 +27,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Source = if ($env:FLINK_MCP_SOURCE) { $env:FLINK_MCP_SOURCE } else { 'git+https://github.com/hakkiburakalks/flink-mcp-server' }
+$Source = if ($env:FLINK_MCP_SOURCE) { $env:FLINK_MCP_SOURCE } else { 'flink-mcp-server' }
 
 # Windows PowerShell 5.1 turns any native stderr output into a terminating error under
 # $ErrorActionPreference = 'Stop'; `claude mcp remove` writes to stderr when nothing is registered.

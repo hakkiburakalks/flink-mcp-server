@@ -1,5 +1,8 @@
 # flink-mcp-server
 
+[![PyPI](https://img.shields.io/pypi/v/flink-mcp-server)](https://pypi.org/project/flink-mcp-server/)
+[![CI](https://github.com/hakkiburakalks/flink-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/hakkiburakalks/flink-mcp-server/actions/workflows/ci.yml)
+
 Read-only MCP server for monitoring Apache Flink clusters. It only needs a reachable
 JobManager REST endpoint, so it works the same on bare metal, Docker, Kubernetes or YARN.
 Tool output is summarized for LLMs rather than returning raw REST JSON.
@@ -66,19 +69,20 @@ curl -LsSf .../install.sh | sh -s -- --claude-code --url http://localhost:8081
 & ([scriptblock]::Create((irm .../install.ps1))) -ClaudeCode -Url http://localhost:8081
 ```
 
-Uninstall with `--uninstall` / `-Uninstall`. Set `FLINK_MCP_SOURCE` to install a specific tag or
-a local checkout (e.g. `git+https://github.com/hakkiburakalks/flink-mcp-server@v0.1.0`).
+Uninstall with `--uninstall` / `-Uninstall`. The installers use the release on PyPI; set
+`FLINK_MCP_SOURCE` to install something else, e.g. the latest `main`
+(`git+https://github.com/hakkiburakalks/flink-mcp-server`) or a local checkout.
 
 Or skip installing and let uv run it on demand (Windows, macOS, Linux):
 
 ```
-uvx --from git+https://github.com/hakkiburakalks/flink-mcp-server flink-mcp-server
+uvx flink-mcp-server
 ```
 
 Add it to an MCP client. Claude Code:
 
 ```
-claude mcp add flink -e FLINK_REST_URL=http://localhost:8081 -- uvx --from git+https://github.com/hakkiburakalks/flink-mcp-server flink-mcp-server
+claude mcp add flink -e FLINK_REST_URL=http://localhost:8081 -- uvx flink-mcp-server
 ```
 
 Claude Desktop, Cursor and others (`mcpServers` in their JSON config):
@@ -88,7 +92,7 @@ Claude Desktop, Cursor and others (`mcpServers` in their JSON config):
   "mcpServers": {
     "flink": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/hakkiburakalks/flink-mcp-server", "flink-mcp-server"],
+      "args": ["flink-mcp-server"],
       "env": { "FLINK_REST_URL": "http://localhost:8081" }
     }
   }

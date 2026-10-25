@@ -9,11 +9,11 @@
 #   --claude-code   Also register the server in Claude Code (needs the `claude` CLI)
 #   --uninstall     Remove flink-mcp-server
 # Environment:
-#   FLINK_MCP_SOURCE  What to install (default: the GitHub repo). Accepts a path or a git+ URL,
-#                     e.g. git+https://github.com/hakkiburakalks/flink-mcp-server@v0.1.0
+#   FLINK_MCP_SOURCE  What to install (default: the release on PyPI). Accepts a path or a git+ URL,
+#                     e.g. git+https://github.com/hakkiburakalks/flink-mcp-server
 set -eu
 
-SOURCE="${FLINK_MCP_SOURCE:-git+https://github.com/hakkiburakalks/flink-mcp-server}"
+SOURCE="${FLINK_MCP_SOURCE:-flink-mcp-server}"
 URL="http://localhost:8081"
 CLAUDE=0
 UNINSTALL=0
