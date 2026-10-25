@@ -134,7 +134,48 @@ def summarize_taskmanagers(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-_SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
+MAX_LISTED = 100
+
+
+def summarize_metrics(raw: list[dict[str, Any]], search: str | None = None) -> dict[str, Any]:
+    """Metric values when ids were requested, otherwise the (filtered) catalogue of ids."""
+    if raw and "value" in raw[0]:
+        return {"values": {m["id"]: _number(m["value"]) for m in raw}}
+    ids = sorted(m["id"] for m in raw)
+    if search:
+        ids = [i for i in ids if search.lower() in i.lower()]
+    return {"available": ids[:MAX_LISTED], "matched": len(ids), "truncated": len(ids) > MAX_LISTED}
+
+
+def summarize_jars(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f.get("id"),
+            "name": f.get("name"),
+            "uploaded": f.get("uploaded"),
+            "entry_classes": [e.get("name") for e in f.get("entry", [])],
+        }
+        for f in payload.get("files", [])
+    ]
+
+
+def summarize_config(entries: list[dict[str, str]], search: str | None = None) -> dict[str, Any]:
+    items = {e["key"]: e["value"] for e in entries}
+    if search:
+        items = {k: v for k, v in items.items() if search.lower() in k.lower()}
+    shown = dict(sorted(items.items())[:MAX_LISTED])
+    return {"matched": len(items), "truncated": len(items) > MAX_LISTED, "config": shown}
+
+
+def _number(value: str) -> float | int | str:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return value
+    return int(f) if f.is_integer() else f
+
+
+_SEVERITY_ORDER ={"info": 0, "warning": 1, "critical": 2}
 _VERDICT = {0: "healthy", 1: "degraded", 2: "critical"}
 
 

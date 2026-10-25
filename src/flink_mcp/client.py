@@ -62,6 +62,18 @@ class FlinkClient:
             f"/jobs/{job_id}/vertices/{vertex_id}/subtasks/metrics", get=",".join(names)
         )
 
+    async def job_metrics(self, job_id: str, names: list[str] | None = None) -> Any:
+        # Without `get`, Flink lists the available metric ids instead of values.
+        if names:
+            return await self.get(f"/jobs/{job_id}/metrics", get=",".join(names))
+        return await self.get(f"/jobs/{job_id}/metrics")
+
+    async def jars(self) -> Any:
+        return await self.get("/jars")
+
+    async def jobmanager_config(self) -> Any:
+        return await self.get("/jobmanager/config")
+
     async def taskmanagers(self) -> Any:
         return await self.get("/taskmanagers")
 

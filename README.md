@@ -16,6 +16,9 @@ Tool output is summarized for LLMs rather than returning raw REST JSON.
 | `backpressure` | Per-vertex backpressured/busy/idle ms per second |
 | `taskmanagers` | Slots and resources per TaskManager |
 | `job_config` | Job execution config |
+| `job_metrics` | Job metric values, or the catalogue of available metric ids (filterable) |
+| `list_jars` | Uploaded JARs and their entry classes |
+| `cluster_config` | JobManager configuration, filterable by key |
 | `list_clusters` | Configured clusters (names and URLs only) |
 | `fleet_overview` | Overview of all clusters in one call; unreachable ones report an error |
 | `diagnose_job` | One-call verdict (`healthy`/`degraded`/`critical`) with ranked findings from state, tasks, exceptions, checkpoints and backpressure |
@@ -38,18 +41,35 @@ Multiple clusters: copy `clusters.example.yaml`, then set `FLINK_CLUSTERS_FILE`.
 Per cluster: `url`, `token` or `token_env` (preferred, keeps secrets out of the file),
 `ca_cert`, `insecure`, `timeout`.
 
-## Run
+## Install and run
+
+Needs [uv](https://docs.astral.sh/uv/) (Windows, macOS, Linux). Nothing else to install:
 
 ```
-uv sync --extra dev
-uv run flink-mcp-server
+uvx --from git+https://github.com/hakkiburakalks/flink-mcp-server flink-mcp-server
 ```
 
-Claude Code:
+Add it to an MCP client. Claude Code:
 
 ```
-claude mcp add flink -e FLINK_REST_URL=http://localhost:8081 -- uv run --directory <path> flink-mcp-server
+claude mcp add flink -e FLINK_REST_URL=http://localhost:8081 -- uvx --from git+https://github.com/hakkiburakalks/flink-mcp-server flink-mcp-server
 ```
+
+Claude Desktop, Cursor and others (`mcpServers` in their JSON config):
+
+```json
+{
+  "mcpServers": {
+    "flink": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/hakkiburakalks/flink-mcp-server", "flink-mcp-server"],
+      "env": { "FLINK_REST_URL": "http://localhost:8081" }
+    }
+  }
+}
+```
+
+From a checkout: `uv sync --extra dev && uv run flink-mcp-server`.
 
 ## Remote access (Streamable HTTP)
 

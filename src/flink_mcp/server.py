@@ -7,7 +7,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from . import summaries
+from . import __version__, summaries
 from .client import FlinkClient
 from .config import ClusterRegistry, load_clusters
 from .transport import serve_http
@@ -131,6 +131,33 @@ async def taskmanagers(cluster: str | None = None) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+async def job_metrics(
+    job_id: str,
+    names: list[str] | None = None,
+    search: str | None = None,
+    cluster: str | None = None,
+) -> dict[str, Any]:
+    """Job-level metrics. Give `names` to read values; omit it to list the available
+    metric ids (narrow them with `search`, e.g. "checkpoint"). Flink fetches metrics lazily,
+    so the very first call after a job starts can come back empty; retry after a few seconds."""
+    raw = await get_client(cluster).job_metrics(job_id, names)
+    return summaries.summarize_metrics(raw, search)
+
+
+@mcp.tool()
+async def list_jars(cluster: str | None = None) -> list[dict[str, Any]]:
+    """JAR files uploaded to the cluster with their entry classes."""
+    return summaries.summarize_jars(await get_client(cluster).jars())
+
+
+@mcp.tool()
+async def cluster_config(search: str | None = None, cluster: str | None = None) -> dict[str, Any]:
+    """JobManager configuration (secrets are masked by Flink). Use `search` to filter
+    keys, e.g. "checkpoint" or "state.backend"."""
+    return summaries.summarize_config(await get_client(cluster).jobmanager_config(), search)
+
+
+@mcp.tool()
 async def job_config(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Execution configuration of a job."""
     return await get_client(cluster).job_config(job_id)
@@ -138,6 +165,7 @@ async def job_config(job_id: str, cluster: str | None = None) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="flink-mcp-server")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],

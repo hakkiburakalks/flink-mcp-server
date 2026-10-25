@@ -93,3 +93,23 @@ def test_diagnose_recovered_job_downgrades_history():
     assert out["verdict"] == "healthy"
     assert {f["severity"] for f in out["findings"]} == {"info"}
     assert ".." not in out["findings"][0]["message"]
+
+
+def test_metrics_values_are_numeric():
+    out = summaries.summarize_metrics([{"id": "a", "value": "3"}, {"id": "b", "value": "1.5"}, {"id": "c", "value": "x"}])
+    assert out["values"] == {"a": 3, "b": 1.5, "c": "x"}
+
+
+def test_metrics_catalogue_is_filtered_and_capped():
+    raw = [{"id": f"m{i}"} for i in range(150)] + [{"id": "lastCheckpointSize"}]
+    assert summaries.summarize_metrics(raw, "checkpoint") == {
+        "available": ["lastCheckpointSize"], "matched": 1, "truncated": False}
+    capped = summaries.summarize_metrics(raw)
+    assert len(capped["available"]) == 100 and capped["truncated"] and capped["matched"] == 151
+
+
+def test_jars_and_config_summaries():
+    jars = summaries.summarize_jars({"files": [{"id": "x_a.jar", "name": "a.jar", "uploaded": 1, "entry": [{"name": "Main"}]}]})
+    assert jars[0]["entry_classes"] == ["Main"]
+    cfg = summaries.summarize_config([{"key": "state.backend", "value": "rocksdb"}, {"key": "rest.port", "value": "8081"}], "STATE")
+    assert cfg == {"matched": 1, "truncated": False, "config": {"state.backend": "rocksdb"}}
