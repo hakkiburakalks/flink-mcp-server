@@ -43,7 +43,33 @@ Per cluster: `url`, `token` or `token_env` (preferred, keeps secrets out of the 
 
 ## Install and run
 
-Needs [uv](https://docs.astral.sh/uv/) (Windows, macOS, Linux). Nothing else to install:
+One-line installers. They install [uv](https://docs.astral.sh/uv/) first if it is missing,
+then the server. They download and run a script, so read it first if you prefer
+([install.sh](install.sh), [install.ps1](install.ps1)).
+
+macOS / Linux:
+
+```
+curl -LsSf https://raw.githubusercontent.com/hakkiburakalks/flink-mcp-server/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```
+irm https://raw.githubusercontent.com/hakkiburakalks/flink-mcp-server/main/install.ps1 | iex
+```
+
+Options: register in Claude Code and point at your cluster, or remove everything.
+
+```
+curl -LsSf .../install.sh | sh -s -- --claude-code --url http://localhost:8081
+& ([scriptblock]::Create((irm .../install.ps1))) -ClaudeCode -Url http://localhost:8081
+```
+
+Uninstall with `--uninstall` / `-Uninstall`. Set `FLINK_MCP_SOURCE` to install a specific tag or
+a local checkout (e.g. `git+https://github.com/hakkiburakalks/flink-mcp-server@v0.1.0`).
+
+Or skip installing and let uv run it on demand (Windows, macOS, Linux):
 
 ```
 uvx --from git+https://github.com/hakkiburakalks/flink-mcp-server flink-mcp-server
