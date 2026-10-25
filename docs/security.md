@@ -30,9 +30,17 @@ This page describes what has been checked and what has not. None of it is a guar
 
 - Tokens are compared in constant time. A token in the URL is not accepted.
 - The server speaks **plain HTTP**. Put a TLS-terminating proxy in front before exposing it.
-- Host/Origin checks (DNS-rebinding protection): a loopback bind accepts `localhost` names only.
-  A non-loopback bind accepts any `Host` because the bearer token already protects it; set
-  `FLINK_MCP_ALLOWED_HOSTS=flink-mcp.internal:*` to accept only your names.
+- Host/Origin checks (DNS-rebinding protection) depend on how the server is bound:
+
+  | Bind | Token enforced | `FLINK_MCP_ALLOWED_HOSTS` | Host/Origin check |
+  | --- | --- | --- | --- |
+  | loopback | any | unset | `localhost`, `127.0.0.1`, `[::1]` only |
+  | non-loopback | yes | unset | off: a rebinding page cannot know the token, and a browser does not send one by itself |
+  | non-loopback | no (`--no-auth`) | unset | on: `localhost` and the bind address only; other names get `421` |
+  | any | any | set | on: only the listed names (and their `http`/`https` origins) |
+
+  Example: `FLINK_MCP_ALLOWED_HOSTS=flink-mcp.internal:*,10.0.0.5:8000`. An entry without a port
+  matches that exact `Host` (for a proxy on 443), `name:*` matches any port.
 
 ## Credentials
 

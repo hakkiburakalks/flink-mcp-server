@@ -202,7 +202,7 @@ Full model, limits and what was checked: [docs/security.md](https://github.com/h
 | TLS errors | Set `ca_cert` for the cluster; `insecure: true` only for tests |
 | `redirect that was not followed` | Configure the final URL; redirects are never followed |
 | Clients get `401` over HTTP | Send `Authorization: Bearer <token>`; check the token printed at startup |
-| Clients get `421` over HTTP | Set `FLINK_MCP_ALLOWED_HOSTS` to the name clients use, or bind to a non-loopback address |
+| Clients get `421` over HTTP | Set `FLINK_MCP_ALLOWED_HOSTS` to the name clients use (needed for `--no-auth` on a LAN bind, or to restrict names) |
 | No Kubernetes clusters listed | `list_clusters` shows `discovery_error`; check kubeconfig, namespaces and [RBAC](https://github.com/hakkiburakalks/flink-mcp-server/blob/main/examples/kubernetes-rbac.yaml) |
 | Prometheus trends `unmapped` / `ambiguous` | Define a `selector` per cluster; see [docs/prometheus.md](https://github.com/hakkiburakalks/flink-mcp-server/blob/main/docs/prometheus.md) |
 

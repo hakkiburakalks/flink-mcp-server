@@ -92,8 +92,8 @@ async def initialize(configure, host_header: str, origin: str | None = None) -> 
             return (await c.post("/mcp", json=INIT, headers=headers)).status_code
 
 
-def lan(allowed=None):
-    return lambda server: configure_host_checks(server, "0.0.0.0", allowed)
+def lan(allowed=None, authenticated=True, host="0.0.0.0"):
+    return lambda server: configure_host_checks(server, host, allowed, authenticated)
 
 
 async def test_the_sdk_default_rejects_a_lan_host_name():
@@ -102,13 +102,13 @@ async def test_the_sdk_default_rejects_a_lan_host_name():
 
 
 async def test_a_lan_bind_accepts_its_real_host_name():
-    assert "any Host" in configure_host_checks(FastMCP("t"), "0.0.0.0")
+    assert "any Host" in configure_host_checks(FastMCP("t"), "0.0.0.0", None, True)
     assert await initialize(lan(), "flink-mcp.internal:8000") == 200
 
 
 async def test_allowed_hosts_restrict_the_names_a_lan_bind_answers_to():
     allowed = "flink-mcp.internal:*, 10.0.0.5:8000"
-    assert "flink-mcp.internal:*" in configure_host_checks(FastMCP("t"), "0.0.0.0", allowed)
+    assert "flink-mcp.internal:*" in configure_host_checks(FastMCP("t"), "0.0.0.0", allowed, True)
     assert await initialize(lan(allowed), "flink-mcp.internal:8000") == 200
     assert await initialize(lan(allowed), "10.0.0.5:8000") == 200
     assert await initialize(lan(allowed), "evil.example:8000") == 421
@@ -119,4 +119,30 @@ async def test_a_loopback_bind_keeps_the_sdk_protection():
     loopback = lambda server: configure_host_checks(server, "127.0.0.1")  # noqa: E731
     assert "localhost only" in configure_host_checks(FastMCP("t"), "127.0.0.1")
     assert await initialize(loopback, "127.0.0.1:8000") == 200
+    assert await initialize(loopback, "evil.example:8000") == 421
+
+
+async def test_without_a_token_a_lan_bind_keeps_the_dns_rebinding_protection():
+    """--no-auth on a LAN bind: no token stands between a rebinding page and the server."""
+    for host in ("0.0.0.0", "192.168.1.5"):
+        note = configure_host_checks(FastMCP("t"), host, None, False)
+        assert "no token" in note and "any Host" not in note
+        assert await initialize(lan(authenticated=False, host=host), "evil.example:8000") == 421
+        assert await initialize(lan(authenticated=False, host=host), "localhost:8000") == 200
+        assert await initialize(lan(authenticated=False, host=host), "localhost:8000", origin="http://evil.example") == 403
+    assert await initialize(lan(authenticated=False, host="192.168.1.5"), "192.168.1.5:8000") == 200
+    assert await initialize(lan(authenticated=False, host="0.0.0.0"), "192.168.1.5:8000") == 421
+
+
+async def test_allowed_hosts_apply_with_and_without_a_token():
+    for authenticated in (True, False):
+        configure = lan("flink-mcp.internal:*", authenticated)
+        assert await initialize(configure, "flink-mcp.internal:8000") == 200
+        assert await initialize(configure, "evil.example:8000") == 421
+        assert await initialize(configure, "localhost:8000") == 421  # only what was listed
+
+
+async def test_a_loopback_bind_with_a_token_keeps_localhost_only():
+    assert "localhost only" in configure_host_checks(FastMCP("t"), "127.0.0.1", None, True)
+    loopback = lan(authenticated=True, host="127.0.0.1")
     assert await initialize(loopback, "evil.example:8000") == 421

@@ -65,31 +65,46 @@ def resolve_auth(host: str, token: str | None, require_auth: bool) -> tuple[str 
     return generated, f"generated bearer token (set FLINK_MCP_AUTH_TOKEN to choose your own): {generated}"
 
 
-def configure_host_checks(server: FastMCP, host: str, allowed: str | None = None) -> str:
+def configure_host_checks(
+    server: FastMCP, host: str, allowed: str | None = None, authenticated: bool = False
+) -> str:
     """Make the SDK's Host/Origin checks fit how the server is bound; returns a note for the log.
 
     The SDK protects against DNS rebinding by accepting only localhost Host headers. That is
     right for a loopback bind, but it answers 421 to every request that reaches a LAN bind by
     its real name. `FLINK_MCP_ALLOWED_HOSTS` (comma-separated, `name:*` allowed) lists the names
-    clients use; without it a non-loopback bind skips the check, which is safe here because
-    that bind is protected by the bearer token (a browser does not attach one on its own).
+    clients use and is always enforced.
+
+    Without that list the check is dropped only when a bearer token is enforced on a non-loopback
+    bind: a rebinding page cannot know the token, and a browser does not attach one on its own.
+    On a bind with no token (`--no-auth`) nothing else stands in the way of such a page, so the
+    check stays on, accepting localhost and the address the server is bound to.
     """
     try:
         from mcp.server.transport_security import TransportSecuritySettings
     except ImportError:  # older SDKs have no such check
         return "host checks: not provided by this mcp version"
     names = [h.strip() for h in (allowed or "").split(",") if h.strip()]
-    if names:
-        server.settings.transport_security = TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=names,
-            allowed_origins=[f"{scheme}://{n}" for n in names for scheme in ("http", "https")],
-        )
-        return f"host checks: only {', '.join(names)} (FLINK_MCP_ALLOWED_HOSTS)"
-    if is_loopback(host):
+    if not names and not is_loopback(host) and authenticated:
+        server.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        return "host checks: any Host, the bearer token protects this bind (set FLINK_MCP_ALLOWED_HOSTS to restrict)"
+    if not names and is_loopback(host):
         return "host checks: localhost only"
-    server.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    return "host checks: any Host (set FLINK_MCP_ALLOWED_HOSTS to restrict)"
+    base = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    if not names:
+        if host not in ("0.0.0.0", "::", ""):
+            names = [f"[{host}]:*" if ":" in host else f"{host}:*"]
+        note = "host checks: localhost and the bind address only; no token is enforced, set FLINK_MCP_ALLOWED_HOSTS for other names"
+    else:
+        base = []
+        note = f"host checks: only {', '.join(names)} (FLINK_MCP_ALLOWED_HOSTS)"
+    hosts = base + names
+    server.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=[f"{scheme}://{n}" for n in hosts for scheme in ("http", "https")],
+    )
+    return note
 
 
 def build_http_app(server: FastMCP, token: str | None) -> Any:
@@ -103,6 +118,8 @@ def serve_http(
     effective, note = resolve_auth(host, token, require_auth)
     server.settings.host = host
     server.settings.port = port
-    checks = configure_host_checks(server, host, os.environ.get("FLINK_MCP_ALLOWED_HOSTS"))
+    checks = configure_host_checks(
+        server, host, os.environ.get("FLINK_MCP_ALLOWED_HOSTS"), authenticated=effective is not None
+    )
     print(f"flink-mcp-server: http://{host}:{port}/mcp - {note}; {checks}", file=sys.stderr, flush=True)
     uvicorn.run(build_http_app(server, effective), host=host, port=port, log_level="info")
