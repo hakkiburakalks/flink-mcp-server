@@ -145,11 +145,23 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--host", default=os.environ.get("FLINK_MCP_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("FLINK_MCP_PORT", "8000")))
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        default=os.environ.get("FLINK_MCP_REQUIRE_AUTH", "true").lower() in ("0", "false", "no"),
+        help="allow a non-loopback HTTP bind without a token (an explicit token is still enforced)",
+    )
     args = parser.parse_args(argv)
     if args.transport == "stdio":
         mcp.run()
     else:
-        serve_http(mcp, args.host, args.port, os.environ.get("FLINK_MCP_AUTH_TOKEN"))
+        serve_http(
+            mcp,
+            args.host,
+            args.port,
+            os.environ.get("FLINK_MCP_AUTH_TOKEN"),
+            require_auth=not args.no_auth,
+        )
 
 
 if __name__ == "__main__":

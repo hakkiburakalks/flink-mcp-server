@@ -31,6 +31,7 @@ All per-cluster tools take an optional `cluster` argument; omit it for the defau
 | `FLINK_MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `FLINK_MCP_HOST` / `FLINK_MCP_PORT` | `127.0.0.1` / `8000` | HTTP bind address |
 | `FLINK_MCP_AUTH_TOKEN` | unset | Bearer token required on every HTTP request |
+| `FLINK_MCP_REQUIRE_AUTH` | `true` | `false` is the same as `--no-auth` |
 | `FLINK_CLUSTERS_FILE` | unset | YAML with several clusters (overrides the two above) |
 
 Multiple clusters: copy `clusters.example.yaml`, then set `FLINK_CLUSTERS_FILE`.
@@ -57,7 +58,16 @@ FLINK_MCP_AUTH_TOKEN=change-me flink-mcp-server --transport streamable-http --ho
 ```
 
 The endpoint is `http://<host>:8000/mcp`. Clients send `Authorization: Bearer <token>`.
-Binding to anything other than loopback without `FLINK_MCP_AUTH_TOKEN` is refused.
+
+Authentication is on by default:
+
+| Situation | Behaviour |
+| --- | --- |
+| `FLINK_MCP_AUTH_TOKEN` set | Token enforced (always, even with `--no-auth`) |
+| Loopback bind, no token | Open; fine for local use |
+| Non-loopback bind, no token | A random token is generated and printed to stderr at startup |
+| Non-loopback bind, no token, `--no-auth` | Open, with a warning. Only do this on a trusted network |
+
 The server speaks plain HTTP: put it behind a TLS-terminating proxy before exposing it.
 
 Docker: `docker run --rm -p 8000:8000 -e FLINK_MCP_AUTH_TOKEN=change-me flink-mcp-server --transport streamable-http --host 0.0.0.0`

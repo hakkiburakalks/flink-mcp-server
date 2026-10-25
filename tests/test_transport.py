@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from flink_mcp.server import mcp
-from flink_mcp.transport import BearerAuthMiddleware, build_http_app, is_loopback
+from flink_mcp.transport import BearerAuthMiddleware, build_http_app, is_loopback, resolve_auth
 
 
 async def ok_app(scope, receive, send):
@@ -42,10 +42,28 @@ def test_is_loopback(host, expected):
     assert is_loopback(host) is expected
 
 
-def test_public_bind_without_token_is_refused():
-    with pytest.raises(SystemExit, match="FLINK_MCP_AUTH_TOKEN"):
-        build_http_app(mcp, "0.0.0.0", None)
+def test_explicit_token_is_always_enforced():
+    for host, require in [("127.0.0.1", True), ("0.0.0.0", True), ("0.0.0.0", False)]:
+        assert resolve_auth(host, "mine", require)[0] == "mine"
 
 
-def test_loopback_without_token_is_allowed():
-    assert build_http_app(mcp, "127.0.0.1", None) is not None
+def test_loopback_without_token_stays_open():
+    assert resolve_auth("127.0.0.1", None, True)[0] is None
+
+
+def test_public_bind_without_token_generates_one():
+    token, note = resolve_auth("0.0.0.0", None, True)
+    assert token and len(token) >= 24
+    assert token in note
+    assert resolve_auth("0.0.0.0", None, True)[0] != token  # fresh each time
+
+
+def test_no_auth_opens_public_bind_with_warning():
+    token, note = resolve_auth("0.0.0.0", None, False)
+    assert token is None
+    assert "WARNING" in note
+
+
+def test_build_http_app_wraps_only_with_token():
+    assert isinstance(build_http_app(mcp, "t"), BearerAuthMiddleware)
+    assert not isinstance(build_http_app(mcp, None), BearerAuthMiddleware)

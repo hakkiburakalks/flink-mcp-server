@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import secrets
+import sys
 from typing import Any
 
 import uvicorn
@@ -47,19 +48,32 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(server: FastMCP, host: str, token: str | None) -> Any:
-    """Streamable-HTTP ASGI app. Refuses to expose a non-loopback host without a token."""
-    if not is_loopback(host) and not token:
-        raise SystemExit(
-            f"Refusing to listen on {host} without authentication: "
-            "set FLINK_MCP_AUTH_TOKEN (or bind to 127.0.0.1)."
-        )
+def resolve_auth(host: str, token: str | None, require_auth: bool) -> tuple[str | None, str]:
+    """Decide the effective bearer token and describe the choice.
+
+    An explicit token is always enforced. Without one, loopback binds stay open,
+    non-loopback binds get a generated token, unless auth was explicitly disabled.
+    """
+    if token:
+        return token, "using FLINK_MCP_AUTH_TOKEN"
+    if is_loopback(host):
+        return None, "no authentication (loopback only)"
+    if not require_auth:
+        return None, f"WARNING: authentication disabled on {host}; anyone who can reach it can query your clusters"
+    generated = secrets.token_urlsafe(24)
+    return generated, f"generated bearer token (set FLINK_MCP_AUTH_TOKEN to choose your own): {generated}"
+
+
+def build_http_app(server: FastMCP, token: str | None) -> Any:
     app = server.streamable_http_app()
     return BearerAuthMiddleware(app, token) if token else app
 
 
-def serve_http(server: FastMCP, host: str, port: int, token: str | None) -> None:
+def serve_http(
+    server: FastMCP, host: str, port: int, token: str | None, require_auth: bool = True
+) -> None:
+    effective, note = resolve_auth(host, token, require_auth)
+    print(f"flink-mcp-server: http://{host}:{port}/mcp - {note}", file=sys.stderr, flush=True)
     server.settings.host = host
     server.settings.port = port
-    app = build_http_app(server, host, token)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(build_http_app(server, effective), host=host, port=port, log_level="info")
