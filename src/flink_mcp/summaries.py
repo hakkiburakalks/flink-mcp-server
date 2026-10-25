@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 BACKPRESSURE_METRICS = [
@@ -106,8 +107,12 @@ def summarize_backpressure(vertex_name: str, vertex_id: str, metrics: list[dict[
     by_id = {m["id"]: m for m in metrics}
 
     def avg(name: str) -> float | None:
-        m = by_id.get(name)
-        return round(m["avg"], 1) if m and "avg" in m else None
+        # Flink sends "NaN" (a string) for metrics it cannot compute, e.g. a source's busy time.
+        try:
+            value = float(by_id[name]["avg"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return round(value, 1) if math.isfinite(value) else None
 
     bp, busy, idle = (avg(n) for n in BACKPRESSURE_METRICS)
     return {
@@ -239,9 +244,15 @@ def diagnose(
         else:
             add("warning", "checkpoints", f"{history}.")
 
-    for v in backpressure:
+    for i, v in enumerate(backpressure):
         if v.get("level") == "high":
-            add("critical", "backpressure", f"Vertex '{v['vertex']}' is backpressured {v['backpressured_ms_per_s']} ms/s; the bottleneck is usually the next vertex downstream.")
+            nxt = backpressure[i + 1] if i + 1 < len(backpressure) else None
+            where = (
+                f"likely bottleneck: '{nxt['vertex']}' (busy {nxt['busy_ms_per_s']} ms/s)"
+                if nxt
+                else "the bottleneck is usually the next vertex downstream"
+            )
+            add("critical", "backpressure", f"Vertex '{v['vertex']}' is backpressured {v['backpressured_ms_per_s']} ms/s; {where}.")
         elif v.get("level") == "low":
             add("warning", "backpressure", f"Vertex '{v['vertex']}' shows moderate backpressure ({v['backpressured_ms_per_s']} ms/s).")
 

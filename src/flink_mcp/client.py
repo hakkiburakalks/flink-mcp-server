@@ -9,6 +9,26 @@ class FlinkConnectionError(Exception):
     pass
 
 
+class FlinkHTTPError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _http_error_message(resp: httpx.Response) -> str:
+    message = f"Flink returned {resp.status_code} {resp.reason_phrase} for {resp.request.url.path}"
+    try:
+        # Flink explains failures as {"errors": ["..."]}, e.g. "Job ... not found".
+        errors = resp.json().get("errors")
+    except (ValueError, AttributeError):
+        errors = None
+    if errors:
+        message += f": {errors[0].splitlines()[0].rstrip('.')}"
+    if resp.status_code in (401, 403):
+        message += ". Check the cluster's token / token_env (and any proxy in front of Flink)"
+    return message + "."
+
+
 class FlinkClient:
     """Thin async wrapper around the Flink JobManager REST API (read-only)."""
 
@@ -36,7 +56,8 @@ class FlinkClient:
             raise FlinkConnectionError(
                 f"Cannot reach Flink at {self._http.base_url}: {type(e).__name__} {e}".rstrip()
             ) from e
-        resp.raise_for_status()
+        if resp.is_error:
+            raise FlinkHTTPError(resp.status_code, _http_error_message(resp))
         return resp.json()
 
     async def overview(self) -> Any:

@@ -113,3 +113,32 @@ def test_jars_and_config_summaries():
     assert jars[0]["entry_classes"] == ["Main"]
     cfg = summaries.summarize_config([{"key": "state.backend", "value": "rocksdb"}, {"key": "rest.port", "value": "8081"}], "STATE")
     assert cfg == {"matched": 1, "truncated": False, "config": {"state.backend": "rocksdb"}}
+
+
+def test_backpressure_tolerates_nan_strings():
+    # Real Flink payload for a datagen source: busy time is the string "NaN".
+    metrics = [
+        {"id": "backPressuredTimeMsPerSecond", "avg": 0.0},
+        {"id": "busyTimeMsPerSecond", "avg": "NaN"},
+        {"id": "idleTimeMsPerSecond", "avg": "Infinity"},
+    ]
+    out = summaries.summarize_backpressure("src", "v1", metrics)
+    assert out["busy_ms_per_s"] is None
+    assert out["idle_ms_per_s"] is None
+    assert out["backpressured_ms_per_s"] == 0.0
+    assert out["level"] == "ok"
+
+
+def test_backpressure_accepts_numeric_strings():
+    out = summaries.summarize_backpressure("m", "v", [{"id": "backPressuredTimeMsPerSecond", "avg": "750.4"}])
+    assert out["backpressured_ms_per_s"] == 750.4
+    assert out["level"] == "high"
+
+
+def test_diagnose_names_the_downstream_bottleneck():
+    bp = [
+        {"vertex": "Source: src", "level": "high", "backpressured_ms_per_s": 977.5, "busy_ms_per_s": None},
+        {"vertex": "Sink: snk", "level": "ok", "backpressured_ms_per_s": 0.0, "busy_ms_per_s": 1000.0},
+    ]
+    msg = summaries.diagnose(_job(), {}, _cp(), bp)["findings"][0]["message"]
+    assert "likely bottleneck: 'Sink: snk' (busy 1000.0 ms/s)" in msg
