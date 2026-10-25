@@ -1,4 +1,4 @@
-"""Run against a live cluster: docker compose -f tests/docker-compose.yml up -d, then pytest -m integration."""
+"""Run against a live cluster: docker compose -f tests/env/docker-compose.yml up -d, then pytest -m integration."""
 
 import os
 

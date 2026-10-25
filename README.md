@@ -249,8 +249,8 @@ The server speaks plain HTTP: put it behind a TLS-terminating proxy before expos
 
 ```
 uv run pytest                      # unit tests
-docker compose -f tests/docker-compose.yml up -d     # Flink + Prometheus
-docker compose -f tests/docker-compose.yml exec jobmanager flink run -d /opt/flink/examples/streaming/StateMachineExample.jar
+docker compose -f tests/env/docker-compose.yml up -d     # Flink + Prometheus
+docker compose -f tests/env/docker-compose.yml exec jobmanager flink run -d /opt/flink/examples/streaming/StateMachineExample.jar
 uv run pytest -m integration       # needs the local cluster (Docker)
 ```
 

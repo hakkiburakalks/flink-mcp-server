@@ -1,5 +1,5 @@
-"""Against a real Flink + Prometheus: docker compose -f tests/docker-compose.yml up -d, submit a job
-(docker compose -f tests/docker-compose.yml exec jobmanager flink run -d
+"""Against a real Flink + Prometheus: docker compose -f tests/env/docker-compose.yml up -d, submit a job
+(docker compose -f tests/env/docker-compose.yml exec jobmanager flink run -d
 /opt/flink/examples/streaming/StateMachineExample.jar), then pytest -m integration."""
 
 import asyncio

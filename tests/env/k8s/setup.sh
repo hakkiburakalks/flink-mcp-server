@@ -4,7 +4,7 @@
 # and kubeconfigs for the read-only service account from examples/kubernetes-rbac.yaml and for
 # an unprivileged one.
 #
-#   bash tests/k8s/setup.sh [output-dir]        # default: tests/k8s/.out
+#   bash tests/env/k8s/setup.sh [output-dir]        # default: tests/env/k8s/.out
 #   FLINK_MCP_K8S_TEST_DIR=<output-dir> uv run pytest -m k8s
 #   kind delete cluster --name flinkmcp-test    # when done
 #
@@ -34,7 +34,7 @@ helm install flink-kubernetes-operator \
   --set webhook.create=false -n flink --wait --timeout 8m
 
 echo "==> FlinkDeployments and RBAC"
-(cd "$here" && kubectl apply -f deployments.yaml -f ../../examples/kubernetes-rbac.yaml)
+(cd "$here" && kubectl apply -f deployments.yaml -f ../../../examples/kubernetes-rbac.yaml)
 
 echo "==> waiting for 'orders' to run its job"
 for _ in $(seq 1 90); do

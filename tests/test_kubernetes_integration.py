@@ -1,7 +1,7 @@
 """End-to-end tests against a real Kubernetes cluster with the Flink Kubernetes Operator.
 
-Build the environment with `bash tests/k8s/setup.sh`, then:
-    FLINK_MCP_K8S_TEST_DIR=tests/k8s/.out uv run pytest -m k8s
+Build the environment with `bash tests/env/k8s/setup.sh`, then:
+    FLINK_MCP_K8S_TEST_DIR=tests/env/k8s/.out uv run pytest -m k8s
 """
 
 import asyncio
@@ -20,7 +20,7 @@ TEST_DIR = os.environ.get("FLINK_MCP_K8S_TEST_DIR")
 
 pytestmark = [
     pytest.mark.k8s,
-    pytest.mark.skipif(not TEST_DIR, reason="needs tests/k8s/setup.sh; set FLINK_MCP_K8S_TEST_DIR"),
+    pytest.mark.skipif(not TEST_DIR, reason="needs tests/env/k8s/setup.sh; set FLINK_MCP_K8S_TEST_DIR"),
 ]
 
 
