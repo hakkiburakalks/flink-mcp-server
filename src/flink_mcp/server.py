@@ -155,6 +155,14 @@ async def _backpressure(
 
 
 @mcp.tool()
+async def list_savepoints(job_id: str, cluster: str | None = None) -> dict[str, Any]:
+    """Savepoints of a job, the latest completed checkpoint, and what the job was restored
+    from, each with its storage path. Use it to find where a job can be restarted from; paths are
+    only present for savepoints and for checkpoints retained on cancellation."""
+    return summaries.summarize_savepoints(await (await get_client(cluster)).job_checkpoints(job_id))
+
+
+@mcp.tool()
 async def diagnose_job(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """One-call health verdict for a job: combines state, task status, exceptions,
     checkpoints and backpressure into ranked findings. Start here when asked

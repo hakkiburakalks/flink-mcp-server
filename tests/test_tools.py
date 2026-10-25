@@ -67,6 +67,7 @@ CALLS = [
     ("job_details", {"job_id": "j1"}),
     ("job_exceptions", {"job_id": "j1"}),
     ("checkpoint_stats", {"job_id": "j1"}),
+    ("list_savepoints", {"job_id": "j1"}),
     ("backpressure", {"job_id": "j1"}),
     ("diagnose_job", {"job_id": "j1"}),
     ("taskmanagers", {}),

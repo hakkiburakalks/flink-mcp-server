@@ -142,3 +142,32 @@ def test_diagnose_names_the_downstream_bottleneck():
     ]
     msg = summaries.diagnose(_job(), {}, _cp(), bp)["findings"][0]["message"]
     assert "likely bottleneck: 'Sink: snk' (busy 1000.0 ms/s)" in msg
+
+
+def test_savepoints_come_from_the_checkpoint_history():
+    out = summaries.summarize_savepoints({
+        "latest": {
+            "completed": {"id": 9, "external_path": "s3://b/chk-9", "status": "COMPLETED"},
+            "savepoint": {"id": 7, "external_path": "s3://b/sp-7", "status": "COMPLETED"},
+            "restored": {"id": 3, "restore_timestamp": 5, "is_savepoint": True,
+                         "external_path": "s3://b/sp-3"},
+        },
+        "history": [{"id": 9, "is_savepoint": False}, {"id": 7, "is_savepoint": True,
+                    "external_path": "s3://b/sp-7", "status": "COMPLETED"}],
+    })
+    assert out["latest_savepoint"]["path"] == "s3://b/sp-7"
+    assert [s["id"] for s in out["recent_savepoints"]] == [7]
+    assert out["latest_completed"]["path"] == "s3://b/chk-9"
+    assert out["restored_from"]["is_savepoint"] is True
+
+
+def test_savepoints_when_there_are_none():
+    out = summaries.summarize_savepoints({"latest": {}, "history": []})
+    assert out == {"latest_savepoint": None, "recent_savepoints": [],
+                   "latest_completed": None, "restored_from": None}
+
+
+def test_checkpoints_that_are_not_retained_have_no_path():
+    out = summaries.summarize_savepoints({"latest": {"completed": {
+        "id": 1, "external_path": "<checkpoint-not-externally-addressable>"}}, "history": []})
+    assert out["latest_completed"]["path"] is None

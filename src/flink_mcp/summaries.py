@@ -103,6 +103,31 @@ def summarize_checkpoints(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def summarize_savepoints(payload: dict[str, Any]) -> dict[str, Any]:
+    """Savepoints and the places a job could be restored from, from the checkpoint stats."""
+    latest = payload.get("latest", {})
+
+    def with_path(cp: dict[str, Any]) -> dict[str, Any]:
+        return {**_checkpoint_brief(cp), "status": cp.get("status"), "path": _path(cp)}
+
+    savepoints = [
+        with_path(h) for h in payload.get("history", []) if h.get("is_savepoint")
+    ]
+    last_savepoint = latest.get("savepoint")
+    last_completed = latest.get("completed")
+    restored = latest.get("restored")
+    return {
+        "latest_savepoint": with_path(last_savepoint) if last_savepoint else None,
+        "recent_savepoints": savepoints,
+        "latest_completed": with_path(last_completed) if last_completed else None,
+        "restored_from": (
+            {"id": restored.get("id"), "restore_time": restored.get("restore_timestamp"),
+             "is_savepoint": restored.get("is_savepoint"), "path": _path(restored)}
+            if restored else None
+        ),
+    }
+
+
 def summarize_backpressure(vertex_name: str, vertex_id: str, metrics: list[dict[str, Any]]) -> dict[str, Any]:
     by_id = {m["id"]: m for m in metrics}
 
@@ -291,6 +316,12 @@ def _bp_level(ms_per_s: float | None) -> str:
     if ms_per_s > 100:
         return "low"
     return "ok"
+
+
+def _path(cp: dict[str, Any]) -> str | None:
+    """Flink says "<checkpoint-not-externally-addressable>" for checkpoints that are not retained."""
+    path = cp.get("external_path")
+    return path if path and not path.startswith("<") else None
 
 
 def _checkpoint_brief(cp: dict[str, Any]) -> dict[str, Any]:

@@ -20,6 +20,7 @@ Tool output is summarized for LLMs rather than returning raw REST JSON.
 | `taskmanagers` | Slots and resources per TaskManager |
 | `job_config` | Job execution config |
 | `list_log_files` / `get_logs` | JobManager or TaskManager logs: tail, filter by level (stack traces stay with their error) or text, plus warning/error counts for the whole file |
+| `list_savepoints` | Savepoints, latest completed checkpoint and what the job was restored from, with storage paths |
 | `job_metrics` | Job metric values, or the catalogue of available metric ids (filterable) |
 | `list_jars` | Uploaded JARs and their entry classes |
 | `cluster_config` | JobManager configuration, filterable by key |
@@ -181,4 +182,4 @@ uv run pytest -m integration       # needs the local cluster (Docker)
 ## Roadmap
 
 Done: V2 multi-cluster, token/TLS options, Streamable HTTP with bearer auth, Kubernetes discovery.
-Next: V3 diagnostics (logs: done; savepoints, job timeline, Prometheus), V4 approval-gated operations and SQL Gateway.
+Next: V3 diagnostics (logs, savepoints: done; job timeline, Prometheus), V4 approval-gated operations and SQL Gateway.
