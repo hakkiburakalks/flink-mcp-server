@@ -196,6 +196,46 @@ def summarize_metrics(raw: list[dict[str, Any]], search: str | None = None) -> d
     return {"available": ids[:MAX_LISTED], "matched": len(ids), "truncated": len(ids) > MAX_LISTED}
 
 
+def resolve_metric_ids(ids: list[str], names: list[str]) -> list[str]:
+    """Exact ids, or ids ending in ".<name>" so callers need not know the operator prefix."""
+    return [i for i in ids if any(i == n or i.endswith("." + n) for n in names)]
+
+
+def summarize_aggregated(raw: list[dict[str, Any]]) -> dict[str, Any]:
+    """Subtask-aggregated metrics as min/max/avg; "NaN" and the like become None."""
+
+    def stat(m: dict[str, Any], key: str) -> float | int | str | None:
+        value = _number(m[key])
+        return None if isinstance(value, float) and not math.isfinite(value) else value
+
+    return {m["id"]: {k: stat(m, k) for k in ("min", "max", "avg") if k in m} for m in raw}
+
+
+LAG_WARNING_S = 60
+LAG_CRITICAL_S = 300  # same as the Grafana "Flink CDC Fetch / Emit Lag" rule
+LAG_STALE_AFTER_S = 30
+SOURCE_LAG_METRICS = ["currentFetchEventTimeLag", "currentEmitEventTimeLag", "sourceIdleTime"]
+
+
+def summarize_source_lag(vertex_name: str, vertex_id: str, raw: list[dict[str, Any]]) -> dict[str, Any]:
+    """Worst-subtask source lag and idle time in seconds (Flink reports milliseconds)."""
+
+    def max_s(suffix: str) -> float | None:
+        for m in raw:
+            if m["id"] == suffix or m["id"].endswith("." + suffix):
+                try:
+                    value = float(m["max"])
+                except (KeyError, TypeError, ValueError):
+                    return None
+                return round(value / 1000, 1) if math.isfinite(value) and value >= 0 else None
+        return None
+
+    return {"vertex": vertex_name, "vertex_id": vertex_id,
+            "fetch_lag_s": max_s("currentFetchEventTimeLag"),
+            "emit_lag_s": max_s("currentEmitEventTimeLag"),
+            "idle_s": max_s("sourceIdleTime")}
+
+
 def summarize_jars(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
@@ -234,6 +274,7 @@ def diagnose(
     checkpoints: dict[str, Any] | None,
     backpressure: list[dict[str, Any]],
     unavailable: dict[str, str] | None = None,
+    source_lag: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Combine already-summarized job signals into a verdict with ranked findings.
 
@@ -308,6 +349,25 @@ def diagnose(
             add("critical", "backpressure", f"Vertex '{v['vertex']}' is backpressured {v['backpressured_ms_per_s']} ms/s; {where}.")
         elif v.get("level") == "low":
             add("warning", "backpressure", f"Vertex '{v['vertex']}' shows moderate backpressure ({v['backpressured_ms_per_s']} ms/s).")
+
+    bp_by_id = {v.get("vertex_id"): v for v in backpressure}
+    for s in source_lag or []:
+        lag = max(x for x in (s["fetch_lag_s"], s["emit_lag_s"], 0) if x is not None)
+        if lag < LAG_WARNING_S:
+            continue
+        severity = "critical" if lag >= LAG_CRITICAL_S else "warning"
+        msg = f"Source '{s['vertex']}' lags {lag:g} s behind event time"
+        idle = s["idle_s"]
+        if idle is not None and idle > LAG_STALE_AFTER_S:
+            # The gauges only move when a record arrives: this is the lag of the last record.
+            msg += (f"; no record for {idle:g} s, so this value is frozen. Either the source is quiet "
+                    "or the reader stalled; compare with the upstream's write rate")
+        elif bp_by_id.get(s["vertex_id"], {}).get("level") in ("low", "high"):
+            msg += "; the source is backpressured, so the delay is downstream (see backpressure findings)"
+        else:
+            msg += ("; the source is neither busy nor backpressured, so events arrive already late: "
+                    "the delay is upstream (e.g. replica lag on the database the CDC reads from)")
+        add(severity, "source_lag", msg + ".")
 
     if (
         state == "RUNNING"

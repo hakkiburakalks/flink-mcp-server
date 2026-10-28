@@ -151,6 +151,7 @@ optional `cluster` argument.
 | `checkpoint_stats` | Counts, failure rate, last completed and failed checkpoint |
 | `backpressure` | Per-vertex backpressured, busy and idle time |
 | `job_metrics` | Metric values, or the catalogue of available metrics |
+| `vertex_metrics` | Operator/task metrics per vertex (min/max/avg over subtasks); names may omit the operator prefix, e.g. `currentFetchEventTimeLag` |
 | `job_config` | Job execution configuration |
 | `list_savepoints` | Savepoints, latest completed checkpoint, what the job was restored from |
 | `job_timeline` | Time-ordered state changes, failures, checkpoints, savepoints, restores and Kubernetes events, with each source's coverage |

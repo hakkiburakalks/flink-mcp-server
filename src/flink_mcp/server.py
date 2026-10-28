@@ -178,6 +178,60 @@ async def _backpressure(
     ]
 
 
+async def _source_lag(
+    client: FlinkClient, job_id: str, raw_job: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if raw_job.get("state") != "RUNNING":
+        return []
+    sources = [v for v in raw_job.get("vertices", []) if str(v.get("name", "")).startswith("Source:")]
+
+    async def one(v: dict[str, Any]) -> dict[str, Any]:
+        ids = summaries.resolve_metric_ids(
+            [m["id"] for m in await client.vertex_metrics(job_id, v["id"])], summaries.SOURCE_LAG_METRICS
+        )
+        raw = await client.vertex_metrics(job_id, v["id"], ids) if ids else []
+        return summaries.summarize_source_lag(v.get("name"), v["id"], raw)
+
+    return list(await asyncio.gather(*(one(v) for v in sources)))
+
+
+@mcp.tool()
+async def vertex_metrics(
+    job_id: str,
+    vertex_id: str | None = None,
+    names: list[str] | None = None,
+    search: str | None = None,
+    cluster: str | None = None,
+) -> list[dict[str, Any]]:
+    """Operator/task metrics of a job's vertices (all of them, or one vertex_id from
+    job_details), aggregated over subtasks as min/max/avg. Without names it lists the
+    metric ids (narrow with search, e.g. "lag"). A name may omit the operator prefix:
+    "currentFetchEventTimeLag" matches "Source__<name>.currentFetchEventTimeLag"."""
+    if names and len(names) > MAX_METRIC_NAMES:
+        raise ValueError(f"ask for at most {MAX_METRIC_NAMES} metrics at a time")
+    client = await get_client(cluster)
+    vertices = [v for v in (await client.job(job_id)).get("vertices", [])
+                if not vertex_id or v["id"] == vertex_id]
+    if vertex_id and not vertices:
+        raise ValueError(f"job {job_id} has no vertex {vertex_id}; see job_details")
+
+    async def one(v: dict[str, Any]) -> dict[str, Any]:
+        head = {"vertex": v.get("name"), "vertex_id": v["id"]}
+        ids = [m["id"] for m in await client.vertex_metrics(job_id, v["id"])]
+        if not names:
+            return {**head, **summaries.summarize_metrics([{"id": i} for i in ids], search)}
+        # A suffix can match many ids (one per operator); keep the request within the limit.
+        matched = summaries.resolve_metric_ids(ids, names)
+        wanted = matched[:MAX_METRIC_NAMES]
+        raw = await client.vertex_metrics(job_id, v["id"], wanted) if wanted else []
+        out = {**head, "values": summaries.summarize_aggregated(raw)}
+        if len(matched) > len(wanted):
+            out["truncated"] = f"{len(matched)} metrics matched; showing {len(wanted)}. Use fuller names"
+        return out
+
+    return list(await asyncio.gather(*(one(v) for v in vertices)))
+
+
 @mcp.tool()
 async def list_savepoints(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Savepoints of a job, the latest completed checkpoint, and what the job was restored
@@ -252,7 +306,7 @@ async def diagnose_job(
     job_id: str, cluster: str | None = None, history: str = "1h"
 ) -> dict[str, Any]:
     """One-call health verdict for a job: combines state, task status, exceptions,
-    checkpoints and backpressure into ranked findings. Start here when asked
+    checkpoints, backpressure and source lag into ranked findings. Start here when asked
     "why is this job unhealthy/slow?". When Prometheus is configured it also reports trends
     over the last `history` (default "1h"; "off" to skip): restarts, checkpoint failures and
     durations, sustained backpressure. Those are observations with their metric and window,
@@ -261,10 +315,11 @@ async def diagnose_job(
     registry = get_registry()
     window = _history_window(registry, history)
     raw_job = await client.job(job_id)  # without the job itself there is nothing to diagnose
-    exceptions, checkpoints, backpressure = await asyncio.gather(
+    exceptions, checkpoints, backpressure, source_lag = await asyncio.gather(
         client.job_exceptions(job_id),
         client.job_checkpoints(job_id),
         _backpressure(client, job_id, raw_job),
+        _source_lag(client, job_id, raw_job),
         return_exceptions=True,
     )
     unavailable: dict[str, str] = {}
@@ -284,6 +339,7 @@ async def diagnose_job(
         usable("checkpoints", checkpoints, summaries.summarize_checkpoints),
         usable("backpressure", backpressure, lambda v: v) or [],
         unavailable,
+        usable("source_lag", source_lag, lambda v: v) or [],
     )
     if window is None:
         return result

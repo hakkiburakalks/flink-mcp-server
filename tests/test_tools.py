@@ -74,6 +74,7 @@ CALLS = [
     ("taskmanagers", {}),
     ("job_metrics", {"job_id": "j1", "names": ["numberOfCompletedCheckpoints"]}),
     ("job_metrics", {"job_id": "j1", "search": "checkpoint"}),
+    ("vertex_metrics", {"job_id": "j1", "names": ["busyTimeMsPerSecond"]}),
     ("list_jars", {}),
     ("cluster_config", {"search": "state"}),
     ("job_config", {"job_id": "j1"}),

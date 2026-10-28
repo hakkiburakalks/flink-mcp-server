@@ -171,3 +171,68 @@ def test_checkpoints_that_are_not_retained_have_no_path():
     out = summaries.summarize_savepoints({"latest": {"completed": {
         "id": 1, "external_path": "<checkpoint-not-externally-addressable>"}}, "history": []})
     assert out["latest_completed"]["path"] is None
+
+
+def _src(fetch, idle, emit=None):
+    return {"vertex": "Source: users", "vertex_id": "s1", "fetch_lag_s": fetch, "emit_lag_s": emit, "idle_s": idle}
+
+
+def _src_bp(level, ms):
+    return [{"vertex": "Source: users", "vertex_id": "s1", "level": level, "backpressured_ms_per_s": ms,
+             "busy_ms_per_s": None}]
+
+
+def _lag_findings(out):
+    return [f for f in out["findings"] if f["area"] == "source_lag"]
+
+
+def test_source_lag_upstream_delay():  # 01:17, replica lag
+    out = summaries.diagnose(_job(), {}, _cp(), _src_bp("ok", 0.0), source_lag=[_src(362, 1)])
+    (f,) = _lag_findings(out)
+    assert f["severity"] == "critical" and "upstream" in f["message"]
+    assert out["verdict"] == "critical"
+
+
+def test_source_lag_frozen_gauge():  # 01:25, last record's lag, no new records
+    out = summaries.diagnose(_job(), {}, _cp(), _src_bp("ok", 0.0), source_lag=[_src(190, 64)])
+    (f,) = _lag_findings(out)
+    assert "frozen" in f["message"] and "the delay is upstream" not in f["message"]
+    assert f["severity"] == "warning"  # 190 s is under LAG_CRITICAL_S
+
+
+def test_source_lag_below_threshold_leaves_only_backpressure():  # 00:13, sink flush
+    out = summaries.diagnose(_job(), {}, _cp(), _src_bp("high", 670.0), source_lag=[_src(40, 0)])
+    assert _lag_findings(out) == []
+    assert [f["area"] for f in out["findings"]] == ["backpressure"]
+
+
+def test_source_lag_with_backpressure_points_downstream():
+    out = summaries.diagnose(_job(), {}, _cp(), _src_bp("high", 900.0), source_lag=[_src(120, 0)])
+    (f,) = _lag_findings(out)
+    assert f["severity"] == "warning" and "downstream" in f["message"]
+
+
+def test_lag_368_with_everything_else_clean_is_never_healthy():
+    out = summaries.diagnose(
+        _job(), {}, _cp(recent=["COMPLETED"] * 3), _src_bp("ok", 0.0), source_lag=[_src(368, 1, emit=368)])
+    assert out["verdict"] == "critical"
+
+
+def test_source_lag_summary_converts_to_seconds_and_ignores_garbage():
+    raw = [{"id": "Source__db.currentFetchEventTimeLag", "min": "0", "max": "362400", "avg": "100"},
+           {"id": "Source__db.currentEmitEventTimeLag", "max": "NaN"},
+           {"id": "Source__db.sourceIdleTime", "max": "-1"}]
+    out = summaries.summarize_source_lag("Source: db", "s1", raw)
+    assert (out["fetch_lag_s"], out["emit_lag_s"], out["idle_s"]) == (362.4, None, None)
+    assert summaries.diagnose(_job(), {}, _cp(), [], source_lag=[out])["findings"][0]["severity"] == "critical"
+
+
+def test_metric_ids_resolve_by_exact_name_or_dotted_suffix():
+    ids = ["Source__a.currentFetchEventTimeLag", "xcurrentFetchEventTimeLag", "numRecordsIn"]
+    assert summaries.resolve_metric_ids(ids, ["currentFetchEventTimeLag"]) == [ids[0]]
+    assert summaries.resolve_metric_ids(ids, ["numRecordsIn"]) == ["numRecordsIn"]
+
+
+def test_aggregated_metrics_keep_min_max_avg_and_drop_nan():
+    out = summaries.summarize_aggregated([{"id": "m", "min": "1", "max": "2.5", "avg": "NaN", "sum": 9}])
+    assert out == {"m": {"min": 1, "max": 2.5, "avg": None}}

@@ -177,10 +177,15 @@ class FlinkClient:
                 return result
             await asyncio.sleep(self.metrics_retry_delay)
 
+    async def vertex_metrics(self, job_id: str, vertex_id: str, names: list[str] | None = None) -> Any:
+        # Subtask-aggregated (min/max/avg/sum); without `get`, Flink lists the metric ids.
+        path = f"/jobs/{validation.job_id(job_id)}/vertices/{validation.vertex_id(vertex_id)}/subtasks/metrics"
+        if names:
+            return await self._get_metrics(path, get=",".join(names))
+        return await self._get_metrics(path)
+
     async def vertex_subtask_metrics(self, job_id: str, vertex_id: str, names: list[str]) -> Any:
-        return await self._get_metrics(
-            f"/jobs/{validation.job_id(job_id)}/vertices/{validation.vertex_id(vertex_id)}/subtasks/metrics", get=",".join(names)
-        )
+        return await self.vertex_metrics(job_id, vertex_id, names)
 
     async def job_metrics(self, job_id: str, names: list[str] | None = None) -> Any:
         # Without `get`, Flink lists the available metric ids instead of values.

@@ -389,3 +389,60 @@ async def test_unexpected_errors_in_a_secondary_source_are_not_swallowed(monkeyp
     monkeypatch.setattr(flink_client.FlinkClient, "job_exceptions", bug)
     with pytest.raises(RuntimeError, match="programming error"):
         await server.diagnose_job("j1")
+
+
+SRC_JOB = {"jid": "j1", "name": "cdc", "state": "RUNNING", "vertices": [
+    {"id": "s1", "name": "Source: users", "status": "RUNNING", "parallelism": 2, "tasks": {"RUNNING": 2}}]}
+LAG_IDS = ["Source__users.currentFetchEventTimeLag", "Source__users.currentEmitEventTimeLag",
+           "Source__users.sourceIdleTime", "numRecordsIn"]
+
+
+def source_routes(fetch_ms, idle_ms):
+    def metrics(request):
+        wanted = request.url.params.get("get")
+        if not wanted:
+            return httpx.Response(200, json=[{"id": i} for i in LAG_IDS])
+        values = {"currentFetchEventTimeLag": fetch_ms, "currentEmitEventTimeLag": fetch_ms,
+                  "sourceIdleTime": idle_ms}
+        return httpx.Response(200, json=[
+            {"id": i, "min": "0", "max": str(values.get(i.split(".")[-1], 0)), "avg": "1"} for i in wanted.split(",")])
+
+    return {"/jobs/j1": SRC_JOB, "/jobs/j1/vertices/s1/subtasks/metrics": metrics}
+
+
+async def test_diagnose_job_reports_source_lag_from_the_operator_metrics(monkeypatch):
+    def use(overrides):
+        routes = {**FLINK_OK, **overrides}
+
+        def handler(request):
+            body = routes.get(request.url.path)
+            if callable(body):
+                return body(request)
+            if isinstance(body, httpx.Response):
+                return body
+            return httpx.Response(200, json=body) if body is not None else httpx.Response(404, json={"errors": ["nope"]})
+
+        clusters, default = parse_clusters({"clusters": {"a": {"url": "http://flink"}}})
+        reg = ClusterRegistry(clusters, default, env={})
+        reg.client()._http._transport = httpx.MockTransport(handler)
+        monkeypatch.setattr(server, "_registry", reg)
+
+    use(source_routes(368_000, 1_000))
+    out = await server.diagnose_job("j1")
+    assert out["verdict"] == "critical"
+    assert any(f["area"] == "source_lag" and "upstream" in f["message"] for f in out["findings"])
+
+    use(source_routes(5_000, 1_000))
+    assert (await server.diagnose_job("j1"))["verdict"] == "healthy"
+
+    use({**source_routes(1, 1), "/jobs/j1/vertices/s1/subtasks/metrics": httpx.Response(500, json={"errors": ["down"]})})
+    out = await server.diagnose_job("j1")
+    assert any(f["area"] == "source_lag" and "not assessed" in f["message"] for f in out["findings"])
+
+    use(source_routes(368_000, 1_000))
+    (row,) = await server.vertex_metrics("j1", names=["currentFetchEventTimeLag"])
+    assert row["values"] == {"Source__users.currentFetchEventTimeLag": {"min": 0, "max": 368000, "avg": 1}}
+    (listing,) = await server.vertex_metrics("j1", vertex_id="s1", search="lag")
+    assert listing["matched"] == 2
+    with pytest.raises(ValueError, match="no vertex"):
+        await server.vertex_metrics("j1", vertex_id="nope")
