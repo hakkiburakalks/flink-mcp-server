@@ -309,6 +309,17 @@ async def test_optional_tools_exist_only_when_prometheus_is_configured(monkeypat
     assert {t.name for t in await server.mcp.list_tools()} == {"prometheus_query", "prometheus_query_range"}
 
 
+async def test_every_tool_is_annotated_read_only(monkeypatch):
+    setup(monkeypatch)
+    server.register_optional_tools()
+    tools = await server.mcp.list_tools()
+    assert len(tools) >= 22
+    for t in tools:
+        assert t.annotations is not None, t.name
+        assert t.annotations.readOnlyHint is True, t.name
+        assert t.annotations.destructiveHint is False, t.name
+
+
 def test_a_broken_configuration_does_not_stop_startup(monkeypatch):
     def broken():
         raise ConfigError("bad file")

@@ -31,7 +31,8 @@ See the [Flink documentation](https://nightlies.apache.org/flink/flink-docs-stab
 - **Many clusters**: a clusters file, or automatic discovery of `FlinkDeployment`s through the
   Flink Kubernetes Operator.
 - **Optional Prometheus** trends (restarts, failing checkpoints, sustained backpressure).
-- **Read-only** by construction: only `GET` requests. Bounded responses, no redirects followed,
+- **Read-only** by construction: only `GET` requests, and every tool carries the MCP
+  `readOnlyHint` annotation so clients can recognise it. Bounded responses, no redirects followed,
   credentials redacted. See [Security](#-security).
 - stdio for local clients, authenticated Streamable HTTP for remote ones.
 

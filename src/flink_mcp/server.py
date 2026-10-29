@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from . import __version__, kube_summaries, summaries, timeline, trends
 from .client import FlinkClient, FlinkConnectionError, FlinkHTTPError, log_file_path
@@ -21,6 +22,8 @@ from .transport import serve_http
 
 _registry: ClusterRegistry | None = None
 MAX_METRIC_NAMES = 50
+# Every tool only reads; clients can use the hint to skip per-call approval.
+READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 
 
 @asynccontextmanager
@@ -52,7 +55,7 @@ async def get_client(cluster: str | None = None) -> FlinkClient:
 # Every tool takes an optional `cluster`; omit it to use the default cluster.
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_clusters() -> dict[str, Any]:
     """Flink clusters from the config file and, if enabled, discovered in Kubernetes
     (names and URLs, never credentials). `discovery_error` explains a failed discovery."""
@@ -72,7 +75,7 @@ async def list_clusters() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def fleet_overview() -> dict[str, Any]:
     """Overview of every configured cluster in one call; unreachable clusters
     are reported with an error instead of failing the whole call."""
@@ -92,7 +95,7 @@ async def fleet_overview() -> dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_flink_deployments(namespace: str | None = None) -> list[dict[str, Any]]:
     """FlinkDeployments (Flink Kubernetes Operator) with lifecycle, JobManager and job state.
     Needs Kubernetes access (kubernetes section in the clusters file, or FLINK_KUBERNETES=true)."""
@@ -103,7 +106,7 @@ async def list_flink_deployments(namespace: str | None = None) -> list[dict[str,
     ]
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def diagnose_deployment(namespace: str, name: str) -> dict[str, Any]:
     """Kubernetes/operator-level health of one FlinkDeployment: operator errors, JobManager
     state and its pods (CrashLoopBackOff, OOMKilled, image pull errors, unschedulable).
@@ -116,25 +119,25 @@ async def diagnose_deployment(namespace: str, name: str) -> dict[str, Any]:
     return {**kube_summaries.deployment_health(dep, pods), "deployment": dep, "pods": pods}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def cluster_overview(cluster: str | None = None) -> dict[str, Any]:
     """Flink version, TaskManager/slot counts and job counts by state."""
     return summaries.summarize_cluster(await (await get_client(cluster)).overview())
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_jobs(cluster: str | None = None) -> list[dict[str, Any]]:
     """All jobs (running and recently finished) with state and duration."""
     return summaries.summarize_jobs(await (await get_client(cluster)).jobs_overview())
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def job_details(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """State and per-vertex status/parallelism of one job."""
     return summaries.summarize_job(await (await get_client(cluster)).job(job_id))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def job_exceptions(
     job_id: str, limit: int = 5, cluster: str | None = None
 ) -> dict[str, Any]:
@@ -142,13 +145,13 @@ async def job_exceptions(
     return summaries.summarize_exceptions(await (await get_client(cluster)).job_exceptions(job_id), limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def checkpoint_stats(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Checkpoint counts, failure rate, last completed/failed checkpoint."""
     return summaries.summarize_checkpoints(await (await get_client(cluster)).job_checkpoints(job_id))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def backpressure(job_id: str, cluster: str | None = None) -> list[dict[str, Any]]:
     """Per-vertex backpressure (avg ms/s backpressured, busy, idle) for a job."""
     client = await get_client(cluster)
@@ -195,7 +198,7 @@ async def _source_lag(
     return list(await asyncio.gather(*(one(v) for v in sources)))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def vertex_metrics(
     job_id: str,
     vertex_id: str | None = None,
@@ -232,7 +235,7 @@ async def vertex_metrics(
     return list(await asyncio.gather(*(one(v) for v in vertices)))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_savepoints(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Savepoints of a job, the latest completed checkpoint, and what the job was restored
     from, each with its storage path. Use it to find where a job can be restarted from; paths are
@@ -240,7 +243,7 @@ async def list_savepoints(job_id: str, cluster: str | None = None) -> dict[str, 
     return summaries.summarize_savepoints(await (await get_client(cluster)).job_checkpoints(job_id))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def job_timeline(
     job_id: str, limit: int = 50, cluster: str | None = None
 ) -> dict[str, Any]:
@@ -301,7 +304,7 @@ async def _kube_timeline_source(
     return deployment, pod_events, pod_names
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def diagnose_job(
     job_id: str, cluster: str | None = None, history: str = "1h"
 ) -> dict[str, Any]:
@@ -428,18 +431,18 @@ def register_optional_tools() -> bool:
             return False
     except ConfigError:
         return False  # a broken config is reported by the first tool call, as before
-    mcp.tool()(prometheus_query)
-    mcp.tool()(prometheus_query_range)
+    mcp.tool(annotations=READ_ONLY)(prometheus_query)
+    mcp.tool(annotations=READ_ONLY)(prometheus_query_range)
     return True
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def taskmanagers(cluster: str | None = None) -> list[dict[str, Any]]:
     """TaskManagers with slot usage and resources."""
     return summaries.summarize_taskmanagers(await (await get_client(cluster)).taskmanagers())
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_log_files(
     taskmanager_id: str | None = None, cluster: str | None = None
 ) -> dict[str, Any]:
@@ -450,7 +453,7 @@ async def list_log_files(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_logs(
     taskmanager_id: str | None = None,
     file: str | None = None,
@@ -478,7 +481,7 @@ async def get_logs(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def job_metrics(
     job_id: str,
     names: list[str] | None = None,
@@ -494,20 +497,20 @@ async def job_metrics(
     return summaries.summarize_metrics(raw, search)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_jars(cluster: str | None = None) -> list[dict[str, Any]]:
     """JAR files uploaded to the cluster with their entry classes."""
     return summaries.summarize_jars(await (await get_client(cluster)).jars())
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def cluster_config(search: str | None = None, cluster: str | None = None) -> dict[str, Any]:
     """JobManager configuration (secrets are masked by Flink). Use `search` to filter
     keys, e.g. "checkpoint" or "state.backend"."""
     return summaries.summarize_config(await (await get_client(cluster)).jobmanager_config(), search)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def job_config(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Execution configuration of a job."""
     return await (await get_client(cluster)).job_config(job_id)
