@@ -9,6 +9,7 @@ build/
 # Test, lint and coverage caches
 .pytest_cache/
 .ruff_cache/
+.audit-*
 .mypy_cache/
 .coverage
 htmlcov/

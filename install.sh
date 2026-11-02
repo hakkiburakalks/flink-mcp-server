@@ -14,6 +14,13 @@
 set -eu
 
 SOURCE="${FLINK_MCP_SOURCE:-flink-mcp-server}"
+if [ -n "${FLINK_MCP_VERSION:-}" ]; then
+  case "$FLINK_MCP_VERSION" in *[!0-9a-zA-Z.+-]*) echo "Invalid FLINK_MCP_VERSION" >&2; exit 1 ;; esac
+  [ -z "${FLINK_MCP_SOURCE:-}" ] || { echo "Choose FLINK_MCP_VERSION or FLINK_MCP_SOURCE" >&2; exit 1; }
+  SOURCE="flink-mcp-server==$FLINK_MCP_VERSION"
+fi
+UV_VERSION="${FLINK_MCP_UV_VERSION:-0.12.1}"
+case "$UV_VERSION" in *[!0-9.]*|'') echo "Invalid FLINK_MCP_UV_VERSION" >&2; exit 1 ;; esac
 URL="http://localhost:8081"
 CLAUDE=0
 UNINSTALL=0
@@ -34,9 +41,15 @@ if ! command -v uv >/dev/null 2>&1; then
   if [ "$UNINSTALL" = 1 ]; then say "uv is not installed; nothing to uninstall."; exit 0; fi
   say "uv not found, installing it from https://astral.sh/uv ..."
   if command -v curl >/dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    UV_INSTALLER="$(mktemp)"
+    trap 'rm -f "$UV_INSTALLER"' EXIT HUP INT TERM
+    curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" -o "$UV_INSTALLER"
+    sh "$UV_INSTALLER"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO- https://astral.sh/uv/install.sh | sh
+    UV_INSTALLER="$(mktemp)"
+    trap 'rm -f "$UV_INSTALLER"' EXIT HUP INT TERM
+    wget -qO "$UV_INSTALLER" "https://astral.sh/uv/$UV_VERSION/install.sh"
+    sh "$UV_INSTALLER"
   else
     say "Need curl or wget to install uv." >&2; exit 1
   fi

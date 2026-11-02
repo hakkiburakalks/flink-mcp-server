@@ -1,4 +1,7 @@
-"""Read-only Prometheus HTTP API client with hard limits on what a query may cost or return."""
+"""Read-only Prometheus API with bounded responses and elapsed HTTP request deadlines.
+
+PromQL evaluation cost must also be controlled by the upstream server.
+"""
 
 from __future__ import annotations
 
@@ -35,6 +38,8 @@ class PromSettings:
     max_range: int = 7 * 86400  # longest window a query may cover, in seconds
     max_points: int = 240  # points per series; the step is raised to stay under this
     max_series: int = 20  # series returned per query
+    max_concurrency: int = 8
+    allow_raw_queries: bool = True
     # How Flink's metrics are labelled in *this* Prometheus. Scrape configs and relabeling
     # differ, so none of these is assumed beyond the reporter's defaults.
     job_id_label: str = "job_id"
@@ -146,7 +151,9 @@ class PromClient:
                 raise PromError(f"Prometheus: environment variable {settings.token_env} is not set")
         self._token = token
         self._shown_url = redact_url(settings.url)
-        self._slots = asyncio.Semaphore(8)
+        if not math.isfinite(settings.timeout) or settings.timeout <= 0 or settings.max_concurrency <= 0:
+            raise ValueError("Prometheus timeout and max_concurrency must be finite and positive")
+        self._slots = asyncio.Semaphore(settings.max_concurrency)
         self._http = httpx.AsyncClient(
             base_url=settings.url.rstrip("/"),
             timeout=settings.timeout,
@@ -161,9 +168,18 @@ class PromClient:
         return self._shown_url
 
     def _clean(self, text: str) -> str:
-        return text.replace(self._token, "***") if self._token else text
+        for secret in (self._token, self._http.base_url.password):
+            if secret:
+                text = text.replace(secret, "***")
+        return text
 
     async def _get(self, path: str, **params: Any) -> dict[str, Any]:
+        try:
+            return await asyncio.wait_for(self._request(path, **params), self.settings.timeout)
+        except asyncio.TimeoutError as e:
+            raise PromError("Prometheus request deadline exceeded (including concurrency wait); retry later or narrow the query") from e
+
+    async def _request(self, path: str, **params: Any) -> dict[str, Any]:
         try:
             async with self._slots, self._http.stream("GET", path, params=params) as resp:
                 body = bytearray()
@@ -176,8 +192,8 @@ class PromClient:
                         )
         except httpx.RequestError as e:
             raise PromError(
-                self._clean(f"Cannot reach Prometheus at {self._shown_url}: {type(e).__name__} {e}".rstrip())
-            ) from e
+                f"Cannot reach Prometheus at {self._shown_url}: {type(e).__name__}"
+            ) from None
         try:
             doc = json.loads(bytes(body))
         except ValueError:
@@ -217,6 +233,8 @@ class PromClient:
         _check_query(promql)
         params: dict[str, Any] = {"query": promql, "timeout": self._timeout_param()}
         if at is not None:
+            if not math.isfinite(at):
+                raise ValueError("query time must be finite")
             params["time"] = at
         doc = await self._get("/api/v1/query", **params)
         return self._shape(doc, points_cap=1)
@@ -224,6 +242,8 @@ class PromClient:
     async def query_range(self, promql: str, start: float, end: float, step: float) -> dict[str, Any]:
         s = self.settings
         _check_query(promql)
+        if not all(math.isfinite(v) for v in (start, end, step)) or step <= 0:
+            raise ValueError("range times and step must be finite; step must be positive")
         if end <= start:
             raise ValueError("the end of the range must be after its start")
         if end - start > s.max_range:
@@ -256,8 +276,16 @@ class PromClient:
         return entries[0].get("type") if entries else None
 
     def _shape(self, doc: dict[str, Any], points_cap: int) -> dict[str, Any]:
+        try:
+            return self._shape_data(doc, points_cap)
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError) as e:
+            raise PromError("Malformed Prometheus result") from e
+
+    def _shape_data(self, doc: dict[str, Any], points_cap: int) -> dict[str, Any]:
         data = doc.get("data") or {}
         kind = data.get("resultType")
+        if kind not in ("scalar", "string", "vector", "matrix"):
+            raise PromError("Unsupported Prometheus result type")
         raw = data.get("result")
         out: dict[str, Any] = {"result_type": kind}
         if doc.get("warnings"):

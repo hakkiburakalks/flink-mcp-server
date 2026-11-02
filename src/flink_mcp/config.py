@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import time
 from dataclasses import dataclass, field, replace
@@ -70,7 +71,7 @@ def _read_clusters_file(path: str) -> Any:
     try:
         return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as e:
-        raise ConfigError(f"Cannot read clusters file {path}: {e}") from e
+        raise ConfigError(f"Cannot read clusters file {path}: {type(e).__name__}") from None
 
 
 def _truthy(value: str | None) -> bool:
@@ -115,7 +116,7 @@ PROM_CONNECTION_KEYS = {
     "url", "token", "token_env", "ca_cert", "insecure", "timeout",
     "job_id_label", "job_name_label", "task_label", "metrics",
 }
-PROM_GLOBAL_KEYS = PROM_CONNECTION_KEYS | {"max_range", "max_points", "max_series", "discovered_selector"}
+PROM_GLOBAL_KEYS = PROM_CONNECTION_KEYS | {"max_range", "max_points", "max_series", "discovered_selector", "max_concurrency", "allow_raw_queries"}
 PROM_CLUSTER_KEYS = PROM_CONNECTION_KEYS | {"selector"}
 
 
@@ -217,13 +218,15 @@ def build_prom_settings(base: Mapping[str, Any], override: Mapping[str, Any] | N
     try:
         numeric = {
             "timeout": float(merged.get("timeout", 10.0)),
-            **{k: int(merged[k]) for k in ("max_points", "max_series") if k in merged},
+            **{k: int(merged[k]) for k in ("max_points", "max_series", "max_concurrency") if k in merged},
             **({"max_range": parse_duration(merged["max_range"])} if "max_range" in merged else {}),
         }
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError, OverflowError) as e:
         raise ConfigError(f"{where}: timeout, max_points and max_series must be numbers and max_range a duration like 7d") from e
-    if any(v <= 0 for v in numeric.values()):
+    if any(not math.isfinite(v) or v <= 0 for v in numeric.values()):
         raise ConfigError(f"{where}: timeout and max_* settings must be positive")
+    if not isinstance(merged.get("allow_raw_queries", True), bool):
+        raise ConfigError(f"{where}: allow_raw_queries must be a boolean")
     return PromSettings(
         url=str(merged["url"]),
         token=merged.get("token"),
@@ -232,6 +235,7 @@ def build_prom_settings(base: Mapping[str, Any], override: Mapping[str, Any] | N
         insecure=bool(merged.get("insecure", False)),
         job_name_label=(merged["job_name_label"] or None) if "job_name_label" in merged else "job_name",
         metrics=tuple((str(k), str(v)) for k, v in metrics.items()),
+        allow_raw_queries=merged.get("allow_raw_queries", True),
         **labels,
         **numeric,
     )
@@ -398,7 +402,8 @@ class ClusterRegistry:
             )
         settings = replace(settings, selector=selector)
         key = (settings.url, settings.token, settings.token_env, settings.ca_cert, settings.insecure,
-               settings.timeout, settings.max_range, settings.max_points, settings.max_series)
+               settings.timeout, settings.max_range, settings.max_points, settings.max_series,
+               settings.max_concurrency, settings.allow_raw_queries)
         if key not in self._prom_clients:
             try:
                 self._prom_clients[key] = PromClient(settings, self._env)

@@ -92,7 +92,8 @@ def configure_host_checks(
     if not names and is_loopback(host):
         note = "host checks: localhost only"
     elif not names:
-        if host not in ("0.0.0.0", "::", ""):
+        # This compares wildcard binds; it does not open a socket.
+        if host not in ("0.0.0.0", "::", ""):  # nosec B104
             names = [f"[{host}]:*" if ":" in host else f"{host}:*"]
         note = "host checks: localhost and the bind address only; no token is enforced, set FLINK_MCP_ALLOWED_HOSTS for other names"
     else:

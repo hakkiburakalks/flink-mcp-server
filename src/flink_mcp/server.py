@@ -384,6 +384,8 @@ async def prometheus_query(
     registry = get_registry()
     await registry.refresh()
     target = registry.prometheus_target(cluster)
+    if not target.settings.allow_raw_queries:
+        raise PromError("Raw PromQL is disabled by prometheus.allow_raw_queries; use scoped diagnostics")
     at = parse_time(time, 0) if time else None
     out = await target.client.query(query, at)
     return {"query": query, "prometheus": target.client.shown_url, **out, **_cut_note(out)}
@@ -403,6 +405,8 @@ async def prometheus_query_range(
     registry = get_registry()
     await registry.refresh()
     target = registry.prometheus_target(cluster)
+    if not target.settings.allow_raw_queries:
+        raise PromError("Raw PromQL is disabled by prometheus.allow_raw_queries; use scoped diagnostics")
     span = parse_duration(window)
     until = parse_time(end, time.time())
     wanted = parse_duration(step) if step else max(15, span // 120)
