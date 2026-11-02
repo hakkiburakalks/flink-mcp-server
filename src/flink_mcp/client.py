@@ -111,11 +111,11 @@ class FlinkClient:
             async with self._slots, self._http.stream("GET", path, params=params or None) as resp:
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > MAX_JSON_BYTES:
+                    if len(body) + len(chunk) > MAX_JSON_BYTES:
                         raise FlinkHTTPError(
                             502, f"Flink's answer for {path} is larger than {MAX_JSON_BYTES // 1024 // 1024} MB; not read"
                         )
+                    body.extend(chunk)
         except httpx.RequestError as e:
             raise self._unreachable(e) from None
         if resp.is_redirect:
@@ -158,22 +158,27 @@ class FlinkClient:
                     raise FlinkHTTPError(resp.status_code, self._clean(_http_error_message(resp, body), resp.request))
                 seen = 0
                 async for chunk in resp.aiter_bytes():
-                    for byte in chunk:
-                        if seen >= max_bytes:
-                            return False
-                        seen += 1
-                        if skip_lf and byte == 10:
-                            skip_lf = False
-                            continue
-                        skip_lf = byte == 13
-                        if byte in (10, 13):
-                            tail.feed(pending.decode(resp.encoding or "utf-8", errors="replace"))
-                            pending.clear()
-                        elif len(pending) >= MAX_LOG_LINE_BYTES:
-                            tail.feed(pending.decode(resp.encoding or "utf-8", errors="replace"))
-                            return False
-                        else:
-                            pending.append(byte)
+                    # A transport can yield one enormous chunk. Slice without copying
+                    # and yield between blocks so deadlines/cancellation remain effective.
+                    view = memoryview(chunk)
+                    for offset in range(0, len(view), 8192):
+                        await asyncio.sleep(0)
+                        for byte in view[offset:offset + 8192]:
+                            if seen >= max_bytes:
+                                return False
+                            seen += 1
+                            if skip_lf and byte == 10:
+                                skip_lf = False
+                                continue
+                            skip_lf = byte == 13
+                            if byte in (10, 13):
+                                tail.feed(pending.decode(resp.encoding or "utf-8", errors="replace"))
+                                pending.clear()
+                            elif len(pending) >= MAX_LOG_LINE_BYTES:
+                                tail.feed(pending.decode(resp.encoding or "utf-8", errors="replace"))
+                                return False
+                            else:
+                                pending.append(byte)
                 if pending:
                     tail.feed(pending.decode(resp.encoding or "utf-8", errors="replace"))
         except httpx.RequestError as e:

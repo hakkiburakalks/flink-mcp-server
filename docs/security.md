@@ -107,8 +107,20 @@ namespace Roles and constrain service proxy access to intended services. GET pro
 can reach other HTTP GET endpoints on authorized services; the MCP tool's fixed paths provide
 an additional restriction, not a replacement for RBAC. Trust kubeconfigs as executable input.
 Credential plugins have a 30-second timeout and a 1 MiB cap on each output stream; failure and
-cancellation terminate and reap the direct child process. Descendants started by plugins remain
-the plugin author's responsibility.
+cancellation close the pipes, terminate the direct child and allow up to 2 additional seconds
+for reaping. Repeated caller cancellation does not interrupt this cleanup. Noninteractive plugins
+receive stdin from the null device so they cannot consume MCP protocol input. Pipe closure uses
+CPython asyncio's subprocess transport because `Process` has no public pipe-close API; the
+Python/OS CI matrix must validate this implementation detail. An OS-level failure to reap is
+reported as a cleanup deadline error rather than waiting forever. Descendants started by plugins
+are not forcibly terminated as a process group; they remain the plugin author's responsibility.
+
+Log parsing yields every 8 KiB of an incoming chunk to keep the elapsed deadline and caller
+cancellation effective even with a single oversized transport chunk. A 64 KiB line followed by
+a separator or EOF is accepted; the next content byte makes the result incomplete. JSON response
+limits are checked before copying each chunk into application buffers. These limits bound the
+package's accumulators, not the incoming chunk already allocated by the HTTP transport or the
+HTTPX decoder/decompressor. There is no strict process-wide memory bound.
 
 ## What has been checked
 

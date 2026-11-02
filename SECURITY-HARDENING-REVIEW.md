@@ -1,5 +1,9 @@
 # Independent security hardening review
 
+Latest update: remediation of independent **REVISE** verdict on PR #3 review commit
+`543cb86d19eb77af91e83ca144443a5484d5157d`. R1–R4 results are recorded below. The PR remains
+Draft and requires another independent review; the earlier initial-audit assessment is historical.
+
 ## Executive Summary
 
 Reviewed the local v0.4.4 working copy on 2026-11-02. Confirmed resource and error-disclosure
@@ -9,7 +13,7 @@ Recommendation: **CONDITIONALLY READY** for controlled deployments, subject to t
 below. This is not a claim of production certification or absence of vulnerabilities.
 
 Release conditions: run the expanded CI platform/version matrix and isolated integration jobs;
-review remaining mutable third-party Action references and validate the external PyPI Trusted
+review Action publisher/transitive dependencies and validate the external PyPI Trusted
 Publisher/environment configuration. No release operation was performed.
 
 ## Baseline
@@ -34,6 +38,8 @@ Publisher/environment configuration. No release operation was performed.
 ## Findings
 
 Locations below refer to the baseline commit, so they remain reproducible after edits.
+The remediation column records the initial PR review commit; the R1–R4 section supersedes its
+cleanup, Action-pinning and test evidence where noted.
 
 | ID | Severity | Classification | Root cause, evidence and impact | Remediation / verification |
 | --- | --- | --- | --- | --- |
@@ -99,8 +105,9 @@ registration and Streamable HTTP initialization are covered by existing passing 
 PromQL remains unchanged by default; disabling it is explicit policy. No output fields removed.
 Log partial reads now return the existing incomplete status rather than discarding all progress.
 
-Python 3.10 grammar/import checks pass on the local 3.11 runtime. Runtime 3.10/3.12/3.13 and
-Linux/macOS execution await CI; they are not claimed as locally tested. Existing Flink,
+Python 3.10 grammar/import checks pass on the local 3.11 runtime. During remediation the full
+suite also passed on installed Windows Python 3.13 and with MCP 1.23.0 in an isolated Python
+3.11 environment. Runtime 3.10/3.12 and Linux/macOS execution await CI. Existing Flink,
 Prometheus and Kubernetes integrations use mock coverage; no live version certification here.
 
 ## Test Matrix
@@ -108,7 +115,11 @@ Prometheus and Kubernetes integrations use mock coverage; no live version certif
 | Category | Status | Evidence |
 | --- | --- | --- |
 | Baseline units | PASS | 300 passed, 0 failed, 13 deselected |
-| Final units/security/installers | PASS | 341 passed, 0 failed; 13 live integration tests excluded |
+| Initial PR #3 units/security/installers | PASS | 341 passed, 0 failed; 13 live integration tests excluded |
+| R1–R4 final units/security/installers | PASS | 375 passed, 0 failed, 13 deselected (Windows Python 3.11) |
+| R1–R4 Python 3.13 | PASS | 375 passed, 0 failed, 13 deselected in isolated Windows environment |
+| R1–R4 minimum MCP SDK 1.23.0 | PASS | 375 passed, 0 failed, 13 deselected on Python 3.11; one upstream Pydantic settings forward-reference warning |
+| R1–R4 focused regressions | PASS | 34 tests for subprocesses, logs, JSON buffers and workflow invariants |
 | Security/HTTP/installer subset | PASS | 128 passed, 0 failed |
 | Syntax / imports | PASS | 13 production Python files compiled and parsed using Python 3.10 grammar |
 | MCP contracts / registration | PASS | 24 unchanged argument signatures; 21 default registrations; initialization unit tests |
@@ -119,7 +130,7 @@ Prometheus and Kubernetes integrations use mock coverage; no live version certif
 | Workflow syntax | PASS | YAML parsing of both workflows and Dependabot; remote GitHub execution not performed |
 | Live Flink/Prometheus/Kubernetes | SKIP | 13 marked tests excluded; suitable isolated live environment not used |
 | Full installer/bootstrap execution | SKIP | Would change user tool installation/client registration; mocked checks used |
-| Other Python/OS combinations, minimum SDK 1.23 | SKIP locally | Expanded CI matrix and existing oldest-sdk job retained; not executed here |
+| Other Python/OS combinations | SKIP locally | Python 3.10/3.12, Linux and macOS remain CI responsibilities |
 | PyPI publisher/environment validation | SKIP | No remote account or infrastructure changes authorized |
 
 Initial development failures (oversized pytest parameter IDs on Windows, a mock PowerShell scope
@@ -145,9 +156,102 @@ error and an assertion expecting plugin stderr) were corrected; no failing check
   These lifecycle edge cases were inspected but not reproduced in normal HTTPX shutdown tests.
 - Successful upstream data can contain secrets or prompt injection; authorization is shared by
   all users with the MCP bearer token. There is no per-user or per-tool authorization system.
-- Mutable third-party Action refs, unpinned isolated build backend, and remote bootstrap trust
-  remain. Runtime lock hashes are integrity checks, not proof of publisher trust. Bit-for-bit
+- Top-level third-party Action refs are now immutable SHA pins. Transitive Action downloads,
+  the unpinned isolated build backend and remote bootstrap trust remain. Runtime lock hashes
+  are integrity checks, not proof of publisher trust. Bit-for-bit
   reproducible release builds and remote Trusted Publisher settings were not independently proven.
+
+## PR #3 Independent Review Remediation — R1–R4
+
+Review baseline: `543cb86d19eb77af91e83ca144443a5484d5157d`. Only necessary changes were
+made on the existing `review/security-hardening-v0.4.5` branch; no new PR or version bump.
+
+### R1 — Kubernetes subprocess lifecycle
+
+**Confirmed:** unconditional `await proc.communicate()` in cleanup could outlive the 30-second
+execution timeout when an inherited pipe stayed open in a descendant. Additional caller
+cancellation could interrupt cleanup. The previous output caps did not bound that final drain.
+
+Remediation cancels readers, terminates the direct child when running and closes the subprocess
+transport/pipes without an EOF-dependent drain. Reaping/read-task completion has a separate
+2-second deadline. Cleanup is shielded from repeated caller cancellation, which is re-raised
+after cleanup. A cancelled cleanup task (such as event-loop shutdown) propagates instead of
+spinning. Noninteractive plugins receive null stdin and cannot consume the MCP protocol stream.
+Reader OSError/RuntimeError details are withheld; overflow is checked before copying data.
+
+Focused tests cover timeout, single/repeated cancellation, stdout/stderr overflow, closed pipes
+with a stalled child, failing plugins, reader failure, a descendant holding inherited pipes,
+a simulated OS reaping stall and cleanup-task cancellation. Real-process tests assert return
+codes and transport closure; deterministic fake-process tests assert bounded failure and no
+remaining reader/wait tasks. An inherited-pipe test requires prompt return rather than waiting
+for the descendant to exit.
+
+Limitations: no public asyncio Process method closes read pipes, so cleanup uses CPython's
+subprocess transport. Windows 3.11/3.13 are locally tested; the remaining supported OS/Python
+matrix must validate that implementation detail. OS termination/reaping cannot be guaranteed
+under kernel failure; a cleanup deadline is reported rather than waiting indefinitely.
+Descendants are not process-group-killed, but this server's pipe handles are closed. Event-loop
+shutdown and custom cancellation-resistant transports are not promised a strict wall-clock bound.
+
+### R2 — Log streaming resource limits
+
+**Confirmed:** the reviewed parser could process an oversized single HTTP chunk without yielding,
+delaying async deadlines/cancellation until it finished. It now uses zero-copy memoryview slices
+and yields every 8 KiB of the already-received chunk. Complete lines remain available after
+timeouts; the existing MCP `complete: false` contract is verified at tool level.
+
+**Not reproduced:** an off-by-one at the 64 KiB logical-line boundary, separator handling or
+split UTF-8 corruption. New tests accept exactly 65,536 content bytes followed by LF, CR, CRLF
+or EOF and reject the next content byte. Byte-budget tests include exact and over-limit CRLF
+and final-line cases. UTF-8 is fed one byte at a time across chunks. Other tests cover partial
+timeouts, single-chunk cancellation and an 8 MiB input chunk. A tracemalloc test allocates the
+transport chunk before tracing and checks only application buffering overhead (<2 MiB in that
+fixture); it is explicitly not a process-wide memory guarantee.
+
+HTTPX/custom transport chunks and decoding/decompression buffers remain below application
+control. Already-allocated incoming chunks can exceed the application cap. No strict total
+process memory limit or protection against arbitrary hostile codecs is claimed.
+
+### R3 — CI and supply chain
+
+All top-level Actions in both changed workflows are pinned to immutable commit SHAs. Pins were
+verified read-only with `git ls-remote` against each publisher repository on 2026-11-02:
+
+| Action | Verified upstream ref | Commit |
+| --- | --- | --- |
+| actions/checkout | refs/tags/v4.2.2 | `11bd71901bbe5b1630ceea73d27597364c9af683` |
+| astral-sh/setup-uv | refs/tags/v5 | `e58605a9b6da7c637471fab8847a5e5a6b8df081` |
+| helm/kind-action | refs/tags/v1 | `0b5c88445f37b7e12a2ce1ecca7805b9046a74db` |
+| actions/upload-artifact | refs/tags/v4 | `ea165f8d65b6e75b540449e92b4886f43607fa02` |
+| actions/download-artifact | refs/tags/v4 | `d3f86a106a0bac45b974a628896c90dbdf5c8093` |
+| pypa/gh-action-pypi-publish | refs/heads/release/v1 | `7245906fb61fa33a13554f9d5fb856fe61758086` |
+
+The 3 OS x 4 Python CI matrix is retained. CI security/package checks require the unit matrix
+and oldest-SDK tests; integration jobs depend on the security gate. Checkout credentials are
+not persisted. Release builds now require a verification job running unit tests, Bandit and
+the hashed dependency audit. Publishing still requires `release: published`, successful build,
+the `pypi` environment and OIDC; only that job has `id-token: write`. No pull-request event can
+trigger this publication workflow. Artifact upload is restricted to wheel/sdist globs, fails
+when empty and retains artifacts for 7 days. Download is the named artifact from the same run.
+Structural regression tests enforce these properties. Remote environment protection rules,
+PyPI Trusted Publisher registration and transitive Action/download trust remain unverified.
+
+### R4 — Independent regression review and verification
+
+Reinspected the entire PR diff for authentication, secret disclosure, public contracts, resource
+exhaustion, error handling, platform assumptions and unrelated files. One additional resource
+issue was confirmed: Flink/Kubernetes/Prometheus JSON readers appended an entire incoming chunk
+before checking the cap. They now reject over-budget chunks before copying. Three guarded-buffer
+regressions fail if the oversized copy occurs. Existing authentication/redaction/path tests remain
+enabled; no bypass or public MCP API change was reproduced, so those controls were not rewritten.
+
+Final primary suite: **375 passed, 0 failed, 13 deselected**. The same 375 tests pass under
+Windows Python 3.13 and under Python 3.11 with MCP 1.23.0. Focused new regressions: **34 passed**.
+Bandit: **0 findings**, existing B104 comparison suppression only. Locked dependency audit:
+**0 known vulnerabilities**. Syntax, public contracts, registration and distribution/legal-file
+checks are rerun before delivery. Live integration tests remain **SKIP (13 deselected)**;
+no Docker/cluster/infrastructure was started. No finding is marked universally resolved beyond
+the tested behavior; another independent review and the remaining CI matrix are required.
 
 ## Release Recommendation
 

@@ -30,6 +30,7 @@ SERVICE_ACCOUNT_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 FLINK_API = "/apis/flink.apache.org/v1beta1"
 DEFAULT_EXEC_TOKEN_TTL = 300.0
 EXEC_TIMEOUT_SECONDS = 30.0
+EXEC_CLEANUP_SECONDS = 2.0
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024  # largest Kubernetes API answer that is read into memory
 
 
@@ -196,39 +197,47 @@ class KubeAuth(httpx.Auth):
             proc = await asyncio.create_subprocess_exec(
                 resolved,
                 *spec.get("args") or [],
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
+            async def drain(stream: asyncio.StreamReader) -> bytes:
+                data = bytearray()
+                while chunk := await stream.read(8192):
+                    if len(data) + len(chunk) > 1024 * 1024:
+                        raise KubeError("kubeconfig exec plugin output exceeded 1 MB")
+                    data.extend(chunk)
+                return bytes(data)
+
+            readers = [asyncio.create_task(drain(s)) for s in (proc.stdout, proc.stderr)]
             try:
                 async def collect() -> tuple[bytes, bytes]:
-                    # read() may return short data before EOF; read to EOF within the cap.
-                    async def drain(stream: asyncio.StreamReader) -> bytes:
-                        data = bytearray()
-                        while chunk := await stream.read(8192):
-                            data.extend(chunk)
-                            if len(data) > 1024 * 1024:
-                                raise KubeError("kubeconfig exec plugin output exceeded 1 MB")
-                        return bytes(data)
-                    readers = [asyncio.create_task(drain(s)) for s in (proc.stdout, proc.stderr)]
-                    try:
-                        out, err = await asyncio.gather(*readers)
-                        await proc.wait()
-                        return out, err
-                    finally:
-                        for reader in readers:
-                            reader.cancel()
-                        await asyncio.gather(*readers, return_exceptions=True)
+                    out, err = await asyncio.gather(*readers)
+                    await proc.wait()
+                    return out, err
 
                 out, err = await asyncio.wait_for(collect(), timeout=EXEC_TIMEOUT_SECONDS)
             except asyncio.TimeoutError as e:
                 raise KubeError(f"kubeconfig exec plugin '{command}' timed out") from e
+            except (OSError, RuntimeError) as e:
+                raise KubeError("kubeconfig exec plugin output could not be read") from None
             finally:
-                if proc.returncode is None:
-                    proc.kill()
-                # Drain pipe buffers after kill: on Windows wait() alone can block
-                # while the subprocess transport has paused reading a full pipe.
-                await proc.communicate()
+                # Repeated caller cancellation must not interrupt pipe closure/reaping.
+                cleanup = asyncio.create_task(_close_exec(proc, readers))
+                cancelled = False
+                while True:
+                    try:
+                        closed = await asyncio.shield(cleanup)
+                        break
+                    except asyncio.CancelledError:
+                        if cleanup.cancelled():
+                            raise  # event-loop shutdown must not spin on a cancelled cleanup
+                        cancelled = True
+                if cancelled:
+                    raise asyncio.CancelledError
+                if not closed:
+                    raise KubeError("kubeconfig exec plugin cleanup deadline exceeded")
             if proc.returncode:
                 raise KubeError(
                     f"kubeconfig exec plugin '{command}' failed (exit {proc.returncode}); stderr withheld"
@@ -243,6 +252,30 @@ class KubeAuth(httpx.Auth):
                 ) from e
             self._exec_token = (token, time.monotonic() + _ttl(status.get("expirationTimestamp")))
             return token
+
+
+async def _close_exec(proc: asyncio.subprocess.Process, readers: list[asyncio.Task]) -> bool:
+    for reader in readers:
+        reader.cancel()
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass  # the child exited between the returncode check and kill
+    # Process has no public pipe-close method. CPython's subprocess transport closes
+    # inherited pipes without waiting for EOF from descendants (Windows and POSIX).
+    # Do not communicate() here: descendants may keep pipes open indefinitely.
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
+    waiter = asyncio.create_task(proc.wait())
+    done, pending = await asyncio.wait([*readers, waiter], timeout=EXEC_CLEANUP_SECONDS)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        if not task.cancelled():
+            task.exception()  # retrieve reader failures without exposing their contents
+    return not pending
 
 
 def _ttl(expiration: str | None) -> float:
@@ -285,12 +318,12 @@ class KubeClient:
             async with self._slots, self._http.stream("GET", path, params=params or None) as resp:
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > MAX_RESPONSE_BYTES:
+                    if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
                         raise KubeError(
                             f"The Kubernetes API answer for {path} is larger than "
                             f"{MAX_RESPONSE_BYTES // 1024 // 1024} MB; not read."
                         )
+                    body.extend(chunk)
         except httpx.RequestError as e:
             raise KubeError(
                 f"Cannot reach the Kubernetes API at {shown}: {type(e).__name__}"

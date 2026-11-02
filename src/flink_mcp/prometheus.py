@@ -184,12 +184,12 @@ class PromClient:
             async with self._slots, self._http.stream("GET", path, params=params) as resp:
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > MAX_RESPONSE_BYTES:
+                    if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
                         raise PromError(
                             f"Prometheus response exceeded {MAX_RESPONSE_BYTES // 1024 // 1024} MB; "
                             "narrow the query (aggregate, add label matchers) or shorten the range"
                         )
+                    body.extend(chunk)
         except httpx.RequestError as e:
             raise PromError(
                 f"Cannot reach Prometheus at {self._shown_url}: {type(e).__name__}"
