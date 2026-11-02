@@ -252,4 +252,20 @@ integration environments), `docs/` (reference), `examples/` (Kubernetes RBAC).
 
 ## 📄 License
 
-Apache License 2.0, see [LICENSE](https://github.com/hakkiburakalks/flink-mcp-server/blob/main/LICENSE).
+Apache License 2.0. Copyright © 2026 Hakkı Burak Alkış.
+
+See [LICENSE](LICENSE) for the complete license and [NOTICE](NOTICE) for attribution.
+
+## Reproducible installation options
+
+The installers default to the current PyPI release. Set `FLINK_MCP_VERSION=0.4.4` to select an
+exact release; use `FLINK_MCP_SOURCE` for a local checkout or an explicitly selected development
+source instead. These settings are mutually exclusive. The uv bootstrap defaults to 0.12.1;
+`FLINK_MCP_UV_VERSION` selects another exact bootstrap version when uv is absent. Existing uv
+installations are used as-is. A package version pin does not pin all transitive dependencies.
+
+For reviewable installation, download the installer from a release tag or commit, inspect it,
+then run the saved file. Piping a script from `main` directly into a shell trusts mutable remote
+code. Bootstrap scripts still trust the uv publisher and HTTPS; version pins alone do not verify
+script signatures. For a locked local environment use `uv sync --locked` (lockfile artifact hashes
+are verified by uv). Ordinary end-user installs resolve dependencies within `pyproject.toml` ranges.

@@ -126,7 +126,7 @@ async def test_expired_exec_token_is_refreshed(tmp_path):
 
 async def test_exec_plugin_failures_are_explained(tmp_path):
     spec, _ = exec_spec(tmp_path, fail=True)
-    with pytest.raises(KubeError, match="failed: boom"):
+    with pytest.raises(KubeError, match="failed .*stderr withheld"):
         await KubeAuth(KubeConfig(SERVER, exec_spec=spec)).token()
     with pytest.raises(KubeError, match="not found on PATH"):
         await KubeAuth(KubeConfig(SERVER, exec_spec={"command": "no-such-plugin-xyz"})).token()

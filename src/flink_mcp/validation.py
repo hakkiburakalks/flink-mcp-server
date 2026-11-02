@@ -20,7 +20,7 @@ _UNSAFE_PATH = re.compile(r"[?#%\\\s]")
 
 
 def _check(pattern: re.Pattern[str], value: object, what: str) -> str:
-    if not isinstance(value, str) or not pattern.match(value) or ".." in value:
+    if not isinstance(value, str) or not pattern.fullmatch(value) or ".." in value:
         shown = value if isinstance(value, str) and len(value) <= 40 else "that value"
         raise ValueError(f"'{shown}' is not a valid {what}")
     return value

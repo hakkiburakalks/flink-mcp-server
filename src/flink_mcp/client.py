@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any
 
 import httpx
@@ -29,7 +28,7 @@ def _http_error_message(resp: httpx.Response, body: bytes = b"") -> str:
         errors = json.loads(body).get("errors")
     except (ValueError, AttributeError):
         errors = None
-    if errors:
+    if isinstance(errors, list) and errors and isinstance(errors[0], str) and errors[0].splitlines():
         message += f": {errors[0].splitlines()[0].rstrip('.')}"
     if resp.status_code in (401, 403):
         message += ". Check the cluster's token / token_env (and any proxy in front of Flink)"
@@ -42,6 +41,7 @@ def _http_error_message(resp: httpx.Response, body: bytes = b"") -> str:
 
 MAX_JSON_BYTES = 32 * 1024 * 1024  # largest REST answer that is read into memory
 LOG_DEADLINE_SECONDS = 30.0  # longest a log tail may take, however slowly the cluster sends it
+MAX_LOG_LINE_BYTES = 64 * 1024
 
 
 def _log_path(taskmanager_id: str | None, name: str | None = None) -> str:
@@ -93,10 +93,17 @@ class FlinkClient:
             follow_redirects=False,  # a redirect must never carry the credentials to another host
         )
 
+    def _clean(self, message: str, request: httpx.Request) -> str:
+        credential = request.headers.get("Authorization", "").partition(" ")[2]
+        for secret in (credential, self._http.base_url.password):
+            if secret:
+                message = message.replace(secret, "***")
+        return message
+
     def _unreachable(self, error: httpx.RequestError) -> FlinkConnectionError:
         # httpx timeouts often carry an empty message; say what was unreachable.
         where = redact_url(str(self._http.base_url))
-        return FlinkConnectionError(f"Cannot reach Flink at {where}: {type(error).__name__} {error}".rstrip())
+        return FlinkConnectionError(f"Cannot reach Flink at {where}: {type(error).__name__}")
 
     async def get(self, path: str, **params: Any) -> Any:
         validation.safe_path(path)
@@ -104,17 +111,17 @@ class FlinkClient:
             async with self._slots, self._http.stream("GET", path, params=params or None) as resp:
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > MAX_JSON_BYTES:
+                    if len(body) + len(chunk) > MAX_JSON_BYTES:
                         raise FlinkHTTPError(
                             502, f"Flink's answer for {path} is larger than {MAX_JSON_BYTES // 1024 // 1024} MB; not read"
                         )
+                    body.extend(chunk)
         except httpx.RequestError as e:
-            raise self._unreachable(e) from e
+            raise self._unreachable(e) from None
         if resp.is_redirect:
             raise FlinkHTTPError(resp.status_code, _redirect_message(resp))
         if resp.is_error:
-            raise FlinkHTTPError(resp.status_code, _http_error_message(resp, bytes(body)))
+            raise FlinkHTTPError(resp.status_code, self._clean(_http_error_message(resp, bytes(body)), resp.request))
         try:
             return json.loads(bytes(body))
         except ValueError as e:
@@ -129,22 +136,55 @@ class FlinkClient:
         a huge or slowly served log cannot hold a call open.
         """
         validation.safe_path(path)
-        deadline = time.monotonic() + LOG_DEADLINE_SECONDS
+        try:
+            return await asyncio.wait_for(self._read_log(path, tail, max_bytes), LOG_DEADLINE_SECONDS)
+        except asyncio.TimeoutError:
+            return False
+
+    async def _read_log(self, path: str, tail: LogTail, max_bytes: int) -> bool:
+        pending = bytearray()
+        skip_lf = False
+        seen = 0
         try:
             async with self._slots, self._http.stream("GET", path) as resp:
                 if resp.is_redirect:
                     raise FlinkHTTPError(resp.status_code, _redirect_message(resp))
                 if resp.is_error:
-                    body = await resp.aread()
-                    raise FlinkHTTPError(resp.status_code, _http_error_message(resp, body))
+                    body = bytearray()
+                    async for chunk in resp.aiter_bytes(chunk_size=8192):
+                        body.extend(chunk[: MAX_JSON_BYTES - len(body)])
+                        if len(body) >= MAX_JSON_BYTES:
+                            break
+                    raise FlinkHTTPError(resp.status_code, self._clean(_http_error_message(resp, body), resp.request))
                 seen = 0
-                async for line in resp.aiter_lines():
-                    seen += len(line) + 1
-                    if seen > max_bytes or time.monotonic() > deadline:
-                        return False
-                    tail.feed(line)
+                async for chunk in resp.aiter_bytes():
+                    # A transport can yield one enormous chunk. Slice without copying
+                    # and yield between blocks so deadlines/cancellation remain effective.
+                    view = memoryview(chunk)
+                    for offset in range(0, len(view), 8192):
+                        await asyncio.sleep(0)
+                        for byte in view[offset:offset + 8192]:
+                            if seen >= max_bytes:
+                                return False
+                            seen += 1
+                            if skip_lf and byte == 10:
+                                skip_lf = False
+                                continue
+                            skip_lf = byte == 13
+                            if byte in (10, 13):
+                                tail.feed(pending.decode(resp.encoding or "utf-8", errors="replace"))
+                                pending.clear()
+                            elif len(pending) >= MAX_LOG_LINE_BYTES:
+                                tail.feed(pending.decode(resp.encoding or "utf-8", errors="replace"))
+                                return False
+                            else:
+                                pending.append(byte)
+                if pending:
+                    tail.feed(pending.decode(resp.encoding or "utf-8", errors="replace"))
         except httpx.RequestError as e:
-            raise self._unreachable(e) from e
+            if seen:
+                return False  # retain complete lines already received; caller reports incomplete
+            raise self._unreachable(e) from None
         return True
 
     async def overview(self) -> Any:

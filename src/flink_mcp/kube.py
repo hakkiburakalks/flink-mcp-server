@@ -29,6 +29,8 @@ from .prometheus import redact_url
 SERVICE_ACCOUNT_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 FLINK_API = "/apis/flink.apache.org/v1beta1"
 DEFAULT_EXEC_TOKEN_TTL = 300.0
+EXEC_TIMEOUT_SECONDS = 30.0
+EXEC_CLEANUP_SECONDS = 2.0
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024  # largest Kubernetes API answer that is read into memory
 
 
@@ -104,7 +106,7 @@ def _from_kubeconfig(path: Path, context: str | None) -> KubeConfig:
     try:
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as e:
-        raise KubeError(f"Cannot read kubeconfig {path}: {e}") from e
+        raise KubeError(f"Cannot read kubeconfig {path}: {type(e).__name__}") from None
 
     wanted = context or doc.get("current-context")
     if not wanted:
@@ -195,18 +197,50 @@ class KubeAuth(httpx.Auth):
             proc = await asyncio.create_subprocess_exec(
                 resolved,
                 *spec.get("args") or [],
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
+            async def drain(stream: asyncio.StreamReader) -> bytes:
+                data = bytearray()
+                while chunk := await stream.read(8192):
+                    if len(data) + len(chunk) > 1024 * 1024:
+                        raise KubeError("kubeconfig exec plugin output exceeded 1 MB")
+                    data.extend(chunk)
+                return bytes(data)
+
+            readers = [asyncio.create_task(drain(s)) for s in (proc.stdout, proc.stderr)]
             try:
-                out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+                async def collect() -> tuple[bytes, bytes]:
+                    out, err = await asyncio.gather(*readers)
+                    await proc.wait()
+                    return out, err
+
+                out, err = await asyncio.wait_for(collect(), timeout=EXEC_TIMEOUT_SECONDS)
             except asyncio.TimeoutError as e:
-                proc.kill()
                 raise KubeError(f"kubeconfig exec plugin '{command}' timed out") from e
+            except (OSError, RuntimeError) as e:
+                raise KubeError("kubeconfig exec plugin output could not be read") from None
+            finally:
+                # Repeated caller cancellation must not interrupt pipe closure/reaping.
+                cleanup = asyncio.create_task(_close_exec(proc, readers))
+                cancelled = False
+                while True:
+                    try:
+                        closed = await asyncio.shield(cleanup)
+                        break
+                    except asyncio.CancelledError:
+                        if cleanup.cancelled():
+                            raise  # event-loop shutdown must not spin on a cancelled cleanup
+                        cancelled = True
+                if cancelled:
+                    raise asyncio.CancelledError
+                if not closed:
+                    raise KubeError("kubeconfig exec plugin cleanup deadline exceeded")
             if proc.returncode:
                 raise KubeError(
-                    f"kubeconfig exec plugin '{command}' failed: {err.decode(errors='replace').strip()[:200]}"
+                    f"kubeconfig exec plugin '{command}' failed (exit {proc.returncode}); stderr withheld"
                 )
             try:
                 status = json.loads(out)["status"]
@@ -218,6 +252,30 @@ class KubeAuth(httpx.Auth):
                 ) from e
             self._exec_token = (token, time.monotonic() + _ttl(status.get("expirationTimestamp")))
             return token
+
+
+async def _close_exec(proc: asyncio.subprocess.Process, readers: list[asyncio.Task]) -> bool:
+    for reader in readers:
+        reader.cancel()
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass  # the child exited between the returncode check and kill
+    # Process has no public pipe-close method. CPython's subprocess transport closes
+    # inherited pipes without waiting for EOF from descendants (Windows and POSIX).
+    # Do not communicate() here: descendants may keep pipes open indefinitely.
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
+    waiter = asyncio.create_task(proc.wait())
+    done, pending = await asyncio.wait([*readers, waiter], timeout=EXEC_CLEANUP_SECONDS)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        if not task.cancelled():
+            task.exception()  # retrieve reader failures without exposing their contents
+    return not pending
 
 
 def _ttl(expiration: str | None) -> float:
@@ -260,20 +318,24 @@ class KubeClient:
             async with self._slots, self._http.stream("GET", path, params=params or None) as resp:
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > MAX_RESPONSE_BYTES:
+                    if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
                         raise KubeError(
                             f"The Kubernetes API answer for {path} is larger than "
                             f"{MAX_RESPONSE_BYTES // 1024 // 1024} MB; not read."
                         )
+                    body.extend(chunk)
         except httpx.RequestError as e:
             raise KubeError(
-                f"Cannot reach the Kubernetes API at {shown}: {type(e).__name__} {e}".rstrip()
-            ) from e
+                f"Cannot reach the Kubernetes API at {shown}: {type(e).__name__}"
+            ) from None
         if resp.is_redirect:
             raise KubeError(f"The Kubernetes API answered {resp.status_code} with a redirect that was not followed.")
         if resp.is_error:
-            raise KubeError(_status_message(resp, bytes(body)))
+            message = _status_message(resp, bytes(body))
+            token = resp.request.headers.get("Authorization", "").partition(" ")[2]
+            if token:
+                message = message.replace(token, "***")
+            raise KubeError(message)
         try:
             return json.loads(bytes(body))
         except ValueError as e:
@@ -318,13 +380,15 @@ class KubeClient:
 
     def rest_url(self, namespace: str, name: str, access: str) -> str:
         """Where the operator-created `<name>-rest` service of a deployment can be reached."""
+        namespace = validation.namespace(namespace)
+        name = validation.resource_name(name)
         if access == "service":
             return f"http://{name}-rest.{namespace}.svc:8081"
         return f"{self.server}/api/v1/namespaces/{namespace}/services/{name}-rest:8081/proxy"
 
     def flink_client(self, url: str, timeout: float | None = None) -> FlinkClient:
         # Proxy URLs need the Kubernetes credentials/CA; in-cluster URLs use plain HTTP.
-        needs_kube = url.startswith(self.server)
+        needs_kube = url.startswith(self.server.rstrip("/") + "/api/v1/namespaces/")
         return FlinkClient(
             url,
             timeout=timeout or self._timeout,

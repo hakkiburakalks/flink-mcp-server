@@ -28,6 +28,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Source = if ($env:FLINK_MCP_SOURCE) { $env:FLINK_MCP_SOURCE } else { 'flink-mcp-server' }
+if ($env:FLINK_MCP_VERSION) {
+    if ($env:FLINK_MCP_VERSION -notmatch '^[0-9A-Za-z.+-]+$') { throw 'Invalid FLINK_MCP_VERSION' }
+    if ($env:FLINK_MCP_SOURCE) { throw 'Choose FLINK_MCP_VERSION or FLINK_MCP_SOURCE' }
+    $Source = "flink-mcp-server==$env:FLINK_MCP_VERSION"
+}
+$UvVersion = if ($env:FLINK_MCP_UV_VERSION) { $env:FLINK_MCP_UV_VERSION } else { '0.12.1' }
+if ($UvVersion -notmatch '^[0-9.]+$') { throw 'Invalid FLINK_MCP_UV_VERSION' }
 
 # Windows PowerShell 5.1 turns any native stderr output into a terminating error under
 # $ErrorActionPreference = 'Stop'; `claude mcp remove` writes to stderr when nothing is registered.
@@ -44,7 +51,7 @@ function Add-ToPath([string]$dir) {
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     if ($Uninstall) { Write-Host 'uv is not installed; nothing to uninstall.'; return }
     Write-Host 'uv not found, installing it from https://astral.sh/uv ...'
-    Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+    Invoke-RestMethod "https://astral.sh/uv/$UvVersion/install.ps1" | Invoke-Expression
     # The uv installer puts binaries here; make them visible to this session.
     Add-ToPath (Join-Path $env:USERPROFILE '.local\bin')
     Add-ToPath (Join-Path $env:USERPROFILE '.cargo\bin')
@@ -76,8 +83,9 @@ if (($env:PATH -split ';') -notcontains $BinDir) {
 if ($ClaudeCode) {
     if (Get-Command claude -ErrorAction SilentlyContinue) {
         Invoke-Optional { claude mcp remove flink -s user }
-        # claude is an npm .ps1 shim here and PowerShell swallows the `--` separator, so go through cmd.
-        cmd.exe /d /s /c "claude mcp add -s user flink -e FLINK_REST_URL=$Url -- `"$Bin`""
+        # Splat arguments to preserve the literal -- without interpreting the URL as shell code.
+        $ClaudeArgs = @('mcp', 'add', '-s', 'user', 'flink', '-e', "FLINK_REST_URL=$Url", '--', $Bin)
+        & claude @ClaudeArgs
         if ($LASTEXITCODE -ne 0) { throw "claude mcp add failed (exit $LASTEXITCODE)" }
         Write-Host "Registered 'flink' in Claude Code (user scope) -> $Url"
     } else {
